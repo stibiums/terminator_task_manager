@@ -1,0 +1,25 @@
+# Starship配置 - 任务管理器集成
+# 将此配置添加到您的 ~/.config/starship.toml 文件中
+
+# 自定义命令模块 - 显示任务状态
+[custom.tasks]
+command = "tasks list 2>/dev/null | wc -l"
+when = "command -v tasks >/dev/null"
+format = "[$symbol$output]($style) "
+symbol = "📋 "
+style = "bold cyan"
+description = "显示待办任务数量"
+
+# 可选：显示更详细的任务信息
+[custom.tasks_urgent]
+command = """
+tasks list 2>/dev/null | grep -c '🔴' || echo 0
+"""
+when = "command -v tasks >/dev/null"
+format = "[$symbol$output]($style) "
+symbol = "🔴 "
+style = "bold red"
+description = "显示高优先级任务数量"
+
+# 点击支持（需要终端支持OSC 8）
+# 可以在shell配置中添加别名来打开TUI
