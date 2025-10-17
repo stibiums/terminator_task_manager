@@ -58,10 +58,12 @@ fn main() -> Result<()> {
         data_dir.join("tasks.db")
     });
 
+    let db_path_str = db_path.to_string_lossy().to_string();
+
     match cli.command {
         Some(Commands::Show) | None => {
             // 启动TUI
-            ui::run_app()?;
+            ui::run_app(db_path_str)?;
         }
         Some(Commands::Add { title }) => {
             let db = Database::open(&db_path)?;
