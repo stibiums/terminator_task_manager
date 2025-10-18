@@ -294,4 +294,28 @@ impl Database {
 
         Ok(sessions)
     }
+
+    /// 获取今日完成的番茄钟统计
+    pub fn get_today_pomodoro_stats(&self) -> Result<(usize, usize)> {
+        let today_start = chrono::Local::now()
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_local_timezone(chrono::Local)
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let mut stmt = self.conn.prepare(
+            "SELECT COUNT(*), SUM(duration_minutes)
+             FROM pomodoro_sessions
+             WHERE completed = 1 AND start_time >= ?1",
+        )?;
+
+        let (count, total_minutes): (i64, Option<i64>) = stmt.query_row(
+            params![today_start.to_rfc3339()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+
+        Ok((count as usize, total_minutes.unwrap_or(0) as usize))
+    }
 }

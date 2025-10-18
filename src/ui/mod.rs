@@ -16,7 +16,7 @@ use ratatui::{
 use std::io;
 
 use crate::db::Database;
-use crate::models::{Note, Priority, Task, TaskStatus};
+use crate::models::{Note, PomodoroSession, Priority, Task, TaskStatus};
 use crate::pomodoro::PomodoroTimer;
 
 mod task_list;
@@ -126,6 +126,11 @@ impl App {
         let db = Database::open(&self.db_path)?;
         self.tasks = db.get_all_tasks()?;
         self.notes = db.get_all_notes()?;
+
+        // 加载番茄钟统计
+        let (completed, minutes) = db.get_today_pomodoro_stats()?;
+        self.pomodoro_completed_today = completed;
+        self.pomodoro_total_minutes = minutes;
 
         // 自动排序任务
         self.sort_tasks();
@@ -333,6 +338,9 @@ impl App {
             db.update_task(task)?;
             self.status_message = Some(format!("任务状态已更新"));
         }
+
+        // 立即重新排序
+        self.sort_tasks();
         Ok(())
     }
 
@@ -418,6 +426,9 @@ impl App {
             db.update_task(task)?;
             self.status_message = Some(format!("优先级已更新"));
         }
+
+        // 立即重新排序
+        self.sort_tasks();
         Ok(())
     }
 
@@ -575,6 +586,8 @@ impl App {
             }
         }
 
+        // 立即重新排序
+        self.sort_tasks();
         self.show_dialog = DialogType::None;
         Ok(())
     }
@@ -615,7 +628,7 @@ fn run_ui_loop<B: ratatui::backend::Backend>(
     loop {
         terminal.draw(|f| ui(f, app))?;
 
-        if event::poll(std::time::Duration::from_millis(100))? {
+        if event::poll(std::time::Duration::from_millis(1000))? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     handle_key_event(app, key.code)?;
@@ -635,7 +648,19 @@ fn run_ui_loop<B: ratatui::backend::Backend>(
                 // 时间到，切换状态
                 match app.pomodoro.state {
                     crate::pomodoro::PomodoroState::Working => {
-                        // 工作时段完成
+                        // 工作时段完成，保存到数据库
+                        if let (Some(start_time), Ok(db)) = (app.pomodoro.start_time, Database::open(&app.db_path)) {
+                            let session = PomodoroSession {
+                                id: None,
+                                task_id: app.pomodoro.current_task_id,
+                                start_time,
+                                end_time: Some(Utc::now()),
+                                duration_minutes: app.pomodoro.work_duration,
+                                completed: true,
+                            };
+                            let _ = db.create_pomodoro(&session);
+                        }
+
                         app.pomodoro_completed_today += 1;
                         app.pomodoro_total_minutes += app.pomodoro.work_duration as usize;
                         app.pomodoro.start_break();
@@ -1296,16 +1321,23 @@ fn render_pomodoro(f: &mut Frame, app: &mut App, area: Rect) {
 
 /// 渲染状态栏
 fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
-    let mode_text = match app.input_mode {
-        InputMode::Normal => "NORMAL",
-        InputMode::Insert => "INSERT",
-        InputMode::Command => "COMMAND",
-    };
-
-    let status = if let Some(ref msg) = app.status_message {
-        msg.clone()
-    } else {
-        format!("模式: {} | Tab/h/l:切换标签 | q:退出 | ?:帮助", mode_text)
+    let status = match app.input_mode {
+        InputMode::Command => {
+            // Command模式：显示正在输入的命令
+            format!(":{}", app.input_buffer)
+        }
+        InputMode::Insert => {
+            // Insert模式：显示模式名称
+            "-- INSERT --".to_string()
+        }
+        InputMode::Normal => {
+            // Normal模式：显示状态消息或帮助信息
+            if let Some(ref msg) = app.status_message {
+                msg.clone()
+            } else {
+                "Tab/h/l:切换标签 | n:新建 | d:删除 | p:优先级 | t:DDL | ?:帮助 | :q退出".to_string()
+            }
+        }
     };
 
     let status_bar = Paragraph::new(status)
@@ -1476,36 +1508,96 @@ fn render_dialog(f: &mut Frame, app: &App) {
                 }
             }
 
-            ("设置DDL时间", vec![
-                Line::from(""),
-                Line::from("使用方向键或 hjkl 调整时间:"),
-                Line::from("  ← / h : 上一个字段"),
-                Line::from("  → / l : 下一个字段"),
-                Line::from("  ↑ / k : 增加"),
-                Line::from("  ↓ / j : 减少"),
-                Line::from(""),
-                Line::from(vec![
-                    Span::raw("当前时间: "),
-                    Span::styled(
-                        chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ]),
-                Line::from(""),
-                Line::from(Span::styled(
-                    "设置的DDL:",
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-                )),
-                Line::from(datetime_spans),
-                Line::from(""),
-                Line::from(vec![
-                    Span::raw("("),
-                    Span::styled(field_names[app.datetime_picker_field], Style::default().fg(Color::Green)),
-                    Span::raw(")"),
-                ]),
-                Line::from(""),
-                Line::from("Enter: 确认 | Esc: 取消"),
-            ])
+            {
+                // 计算时间差
+                let now = chrono::Local::now();
+                let selected_dt = chrono::Local
+                    .with_ymd_and_hms(
+                        app.datetime_year,
+                        app.datetime_month,
+                        app.datetime_day,
+                        app.datetime_hour,
+                        app.datetime_minute,
+                        0,
+                    )
+                    .single();
+
+                let time_diff = if let Some(selected) = selected_dt {
+                    let diff = selected.signed_duration_since(now);
+                    let hours = diff.num_hours();
+                    let days = diff.num_days();
+
+                    if days > 0 {
+                        format!("{} 天后", days)
+                    } else if days < 0 {
+                        format!("{} 天前 (已过期)", -days)
+                    } else if hours > 0 {
+                        format!("{} 小时后", hours)
+                    } else if hours < 0 {
+                        format!("{} 小时前 (已过期)", -hours)
+                    } else {
+                        "当前时间".to_string()
+                    }
+                } else {
+                    "无效日期".to_string()
+                };
+
+                {
+                    let mut content = vec![
+                        Line::from(""),
+                        Line::from(Span::styled(
+                            "════════════════════════════════════════",
+                            Style::default().fg(Color::DarkGray),
+                        )),
+                        Line::from(""),
+                        Line::from(vec![
+                            Span::raw("  "),
+                            Span::styled(
+                                "待设定时间:",
+                                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                            ),
+                        ]),
+                        Line::from(""),
+                    ];
+
+                    // 添加日期时间显示
+                    let mut dt_line = vec![Span::raw("     ")];
+                    dt_line.extend(datetime_spans);
+                    content.push(Line::from(dt_line));
+
+                    content.extend(vec![
+                        Line::from(""),
+                        Line::from(vec![
+                            Span::raw("  当前调整: "),
+                            Span::styled(
+                                field_names[app.datetime_picker_field],
+                                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                            ),
+                            Span::raw("  ("),
+                            Span::styled(time_diff, Style::default().fg(Color::Green)),
+                            Span::raw(")"),
+                        ]),
+                        Line::from(""),
+                        Line::from(Span::styled(
+                            "════════════════════════════════════════",
+                            Style::default().fg(Color::DarkGray),
+                        )),
+                        Line::from(""),
+                        Line::from("操作:"),
+                        Line::from("  ↑/k 增加  ↓/j 减少"),
+                        Line::from("  ←/h 上一字段  →/l 下一字段"),
+                        Line::from(""),
+                        Line::from(vec![
+                            Span::styled("Enter", Style::default().fg(Color::Green)),
+                            Span::raw(" 确认  "),
+                            Span::styled("Esc", Style::default().fg(Color::Red)),
+                            Span::raw(" 取消"),
+                        ]),
+                    ]);
+
+                    ("设置DDL时间", content)
+                }
+            }
         }
         _ => ("", vec![]),
     };
