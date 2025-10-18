@@ -1,5 +1,5 @@
 use anyhow::Result;
-use chrono::Utc;
+use chrono::{Datelike, TimeZone, Timelike, Utc};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, MouseButton, MouseEvent, MouseEventKind},
     execute,
@@ -42,6 +42,16 @@ pub struct App {
     pub input_title: String,
     pub show_dialog: DialogType,
     pub status_message: Option<String>,
+    // 日期时间选择器状态
+    pub datetime_picker_field: usize, // 0=年, 1=月, 2=日, 3=时, 4=分
+    pub datetime_year: i32,
+    pub datetime_month: u32,
+    pub datetime_day: u32,
+    pub datetime_hour: u32,
+    pub datetime_minute: u32,
+    // 番茄钟统计
+    pub pomodoro_completed_today: usize,
+    pub pomodoro_total_minutes: usize,
 }
 
 /// 输入模式
@@ -62,6 +72,7 @@ pub enum DialogType {
     CreateNote,
     EditNote,
     Help,
+    SetDeadline,
 }
 
 impl Default for App {
@@ -71,6 +82,8 @@ impl Default for App {
 
         let mut note_list_state = ListState::default();
         note_list_state.select(Some(0));
+
+        let now = chrono::Local::now();
 
         Self {
             db_path: String::new(),
@@ -86,6 +99,14 @@ impl Default for App {
             input_title: String::new(),
             show_dialog: DialogType::None,
             status_message: None,
+            datetime_picker_field: 0,
+            datetime_year: now.year(),
+            datetime_month: now.month(),
+            datetime_day: now.day(),
+            datetime_hour: now.hour(),
+            datetime_minute: now.minute(),
+            pomodoro_completed_today: 0,
+            pomodoro_total_minutes: 0,
         }
     }
 }
@@ -106,6 +127,9 @@ impl App {
         self.tasks = db.get_all_tasks()?;
         self.notes = db.get_all_notes()?;
 
+        // 自动排序任务
+        self.sort_tasks();
+
         // 更新选择状态
         if !self.tasks.is_empty() && self.task_list_state.selected().is_none() {
             self.task_list_state.select(Some(0));
@@ -115,6 +139,43 @@ impl App {
         }
 
         Ok(())
+    }
+
+    /// 任务自动排序
+    /// 排序规则：
+    /// 1. 未完成的任务优先（按状态：InProgress > Todo > Completed）
+    /// 2. 在同状态下，按优先级排序（High > Medium > Low）
+    /// 3. 在同优先级下，按DDL时间排序（有DDL的优先，且时间早的优先）
+    fn sort_tasks(&mut self) {
+        self.tasks.sort_by(|a, b| {
+            use std::cmp::Ordering;
+
+            // 1. 首先按状态排序
+            let status_order = |status: &TaskStatus| match status {
+                TaskStatus::InProgress => 0,
+                TaskStatus::Todo => 1,
+                TaskStatus::Completed => 2,
+            };
+
+            let status_cmp = status_order(&a.status).cmp(&status_order(&b.status));
+            if status_cmp != Ordering::Equal {
+                return status_cmp;
+            }
+
+            // 2. 同状态下，按优先级排序（逆序，因为High=3, Medium=2, Low=1）
+            let priority_cmp = (b.priority as i32).cmp(&(a.priority as i32));
+            if priority_cmp != Ordering::Equal {
+                return priority_cmp;
+            }
+
+            // 3. 同优先级下，按DDL排序
+            match (&a.due_date, &b.due_date) {
+                (Some(a_due), Some(b_due)) => a_due.cmp(b_due), // 都有DDL，早的优先
+                (Some(_), None) => Ordering::Less,               // a有DDL，a优先
+                (None, Some(_)) => Ordering::Greater,            // b有DDL，b优先
+                (None, None) => Ordering::Equal,                 // 都没有DDL，相等
+            }
+        });
     }
 
     /// 切换标签页
@@ -359,6 +420,164 @@ impl App {
         }
         Ok(())
     }
+
+    /// 初始化日期时间选择器 (设置为当前选中任务的deadline，或当前时间)
+    pub fn init_datetime_picker(&mut self) {
+        if let Some(task) = self.selected_task() {
+            if let Some(due_date) = task.due_date {
+                let local = due_date.with_timezone(&chrono::Local);
+                self.datetime_year = local.year();
+                self.datetime_month = local.month();
+                self.datetime_day = local.day();
+                self.datetime_hour = local.hour();
+                self.datetime_minute = local.minute();
+            } else {
+                let now = chrono::Local::now();
+                self.datetime_year = now.year();
+                self.datetime_month = now.month();
+                self.datetime_day = now.day();
+                self.datetime_hour = now.hour();
+                self.datetime_minute = now.minute();
+            }
+        }
+        self.datetime_picker_field = 0;
+    }
+
+    /// 日期时间选择器：移动到下一个字段
+    pub fn datetime_picker_next_field(&mut self) {
+        self.datetime_picker_field = (self.datetime_picker_field + 1) % 5;
+    }
+
+    /// 日期时间选择器：移动到上一个字段
+    pub fn datetime_picker_prev_field(&mut self) {
+        if self.datetime_picker_field == 0 {
+            self.datetime_picker_field = 4;
+        } else {
+            self.datetime_picker_field -= 1;
+        }
+    }
+
+    /// 日期时间选择器：增加当前字段的值
+    pub fn datetime_picker_increment(&mut self) {
+        match self.datetime_picker_field {
+            0 => self.datetime_year += 1,
+            1 => {
+                self.datetime_month += 1;
+                if self.datetime_month > 12 {
+                    self.datetime_month = 1;
+                }
+            }
+            2 => {
+                let max_day = Self::days_in_month(self.datetime_year, self.datetime_month);
+                self.datetime_day += 1;
+                if self.datetime_day > max_day {
+                    self.datetime_day = 1;
+                }
+            }
+            3 => {
+                self.datetime_hour += 1;
+                if self.datetime_hour > 23 {
+                    self.datetime_hour = 0;
+                }
+            }
+            4 => {
+                self.datetime_minute += 1;
+                if self.datetime_minute > 59 {
+                    self.datetime_minute = 0;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// 日期时间选择器：减少当前字段的值
+    pub fn datetime_picker_decrement(&mut self) {
+        match self.datetime_picker_field {
+            0 => self.datetime_year -= 1,
+            1 => {
+                if self.datetime_month == 1 {
+                    self.datetime_month = 12;
+                } else {
+                    self.datetime_month -= 1;
+                }
+            }
+            2 => {
+                if self.datetime_day == 1 {
+                    let max_day = Self::days_in_month(self.datetime_year, self.datetime_month);
+                    self.datetime_day = max_day;
+                } else {
+                    self.datetime_day -= 1;
+                }
+            }
+            3 => {
+                if self.datetime_hour == 0 {
+                    self.datetime_hour = 23;
+                } else {
+                    self.datetime_hour -= 1;
+                }
+            }
+            4 => {
+                if self.datetime_minute == 0 {
+                    self.datetime_minute = 59;
+                } else {
+                    self.datetime_minute -= 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// 获取某月的天数
+    fn days_in_month(year: i32, month: u32) -> u32 {
+        match month {
+            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+            4 | 6 | 9 | 11 => 30,
+            2 => {
+                if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) {
+                    29
+                } else {
+                    28
+                }
+            }
+            _ => 30,
+        }
+    }
+
+    /// 应用选中的日期时间到当前任务
+    pub fn apply_deadline(&mut self) -> Result<()> {
+        let db_path = self.db_path.clone();
+
+        // 先提取datetime值，避免借用冲突
+        let year = self.datetime_year;
+        let month = self.datetime_month;
+        let day = self.datetime_day;
+        let hour = self.datetime_hour;
+        let minute = self.datetime_minute;
+
+        if let Some(task) = self.selected_task_mut() {
+            // 创建本地时间
+            let local_dt = chrono::Local
+                .with_ymd_and_hms(year, month, day, hour, minute, 0)
+                .single();
+
+            if let Some(local_dt) = local_dt {
+                task.due_date = Some(local_dt.with_timezone(&Utc));
+                task.updated_at = Utc::now();
+
+                let db = Database::open(&db_path)?;
+                db.update_task(task)?;
+                self.status_message = Some(format!(
+                    "DDL已设置: {}-{:02}-{:02} {:02}:{:02}",
+                    year, month, day, hour, minute
+                ));
+            } else {
+                self.status_message = Some("无效的日期时间".to_string());
+            }
+        }
+
+        self.show_dialog = DialogType::None;
+        Ok(())
+    }
 }
 
 /// 运行TUI应用
@@ -416,8 +635,11 @@ fn run_ui_loop<B: ratatui::backend::Backend>(
                 // 时间到，切换状态
                 match app.pomodoro.state {
                     crate::pomodoro::PomodoroState::Working => {
+                        // 工作时段完成
+                        app.pomodoro_completed_today += 1;
+                        app.pomodoro_total_minutes += app.pomodoro.work_duration as usize;
                         app.pomodoro.start_break();
-                        app.status_message = Some("休息时间！".to_string());
+                        app.status_message = Some("🎉 工作时段完成！开始休息！".to_string());
                     }
                     crate::pomodoro::PomodoroState::Break => {
                         app.pomodoro.stop();
@@ -440,6 +662,32 @@ fn run_ui_loop<B: ratatui::backend::Backend>(
 fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
     // 对话框模式
     if app.show_dialog != DialogType::None {
+        // 特殊处理：SetDeadline dialog 使用方向键导航
+        if app.show_dialog == DialogType::SetDeadline {
+            match key {
+                KeyCode::Left | KeyCode::Char('h') => {
+                    app.datetime_picker_prev_field();
+                }
+                KeyCode::Right | KeyCode::Char('l') => {
+                    app.datetime_picker_next_field();
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    app.datetime_picker_increment();
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    app.datetime_picker_decrement();
+                }
+                KeyCode::Enter => {
+                    app.apply_deadline()?;
+                }
+                KeyCode::Esc => {
+                    app.show_dialog = DialogType::None;
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
         match app.input_mode {
             InputMode::Insert => {
                 match key {
@@ -452,7 +700,16 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                     KeyCode::Enter => {
                         match app.show_dialog {
                             DialogType::CreateTask => app.create_task()?,
-                            DialogType::CreateNote => app.create_note()?,
+                            DialogType::CreateNote => {
+                                // Tab键才切换到内容，Enter在有标题后创建
+                                if !app.input_title.is_empty() {
+                                    app.create_note()?;
+                                } else {
+                                    // 第一次Enter：将buffer内容作为标题
+                                    app.input_title = app.input_buffer.clone();
+                                    app.input_buffer.clear();
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -492,12 +749,41 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
         return Ok(());
     }
 
+    // 命令模式处理
+    if app.input_mode == InputMode::Command {
+        match key {
+            KeyCode::Enter => {
+                // 执行命令
+                if app.input_buffer == "q" || app.input_buffer == "quit" {
+                    app.should_quit = true;
+                }
+                app.input_buffer.clear();
+                app.input_mode = InputMode::Normal;
+            }
+            KeyCode::Char(c) => {
+                app.input_buffer.push(c);
+            }
+            KeyCode::Backspace => {
+                app.input_buffer.pop();
+            }
+            KeyCode::Esc => {
+                app.input_buffer.clear();
+                app.input_mode = InputMode::Normal;
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
     // 正常模式快捷键
     match app.input_mode {
         InputMode::Normal => {
             match key {
-                // 退出: q, Ctrl+C
-                KeyCode::Char('q') | KeyCode::Char('Q') => app.should_quit = true,
+                // vim风格命令模式: 按:进入
+                KeyCode::Char(':') => {
+                    app.input_mode = InputMode::Command;
+                    app.input_buffer.clear();
+                }
 
                 // 标签页切换: Tab, Shift+Tab, 1-3
                 KeyCode::Tab => app.next_tab(),
@@ -569,6 +855,13 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                         app.cycle_priority()?;
                     }
                 }
+                KeyCode::Char('t') => {
+                    // 设置DDL时间
+                    if app.current_tab == 0 && !app.tasks.is_empty() {
+                        app.init_datetime_picker();
+                        app.show_dialog = DialogType::SetDeadline;
+                    }
+                }
 
                 // 番茄钟操作 (在番茄钟标签页)
                 KeyCode::Char('s') => {
@@ -595,6 +888,35 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                     app.pomodoro.stop();
                     app.status_message = Some("番茄钟已停止".to_string());
                 }
+                // 番茄钟自定义时长 (在番茄钟标签页)
+                KeyCode::Char('+') | KeyCode::Char('=') => {
+                    if app.current_tab == 2 && app.pomodoro.state == crate::pomodoro::PomodoroState::Idle {
+                        app.pomodoro.work_duration += 5;
+                        app.status_message = Some(format!("工作时长: {}分钟", app.pomodoro.work_duration));
+                    }
+                }
+                KeyCode::Char('-') | KeyCode::Char('_') => {
+                    if app.current_tab == 2 && app.pomodoro.state == crate::pomodoro::PomodoroState::Idle {
+                        if app.pomodoro.work_duration > 5 {
+                            app.pomodoro.work_duration -= 5;
+                            app.status_message = Some(format!("工作时长: {}分钟", app.pomodoro.work_duration));
+                        }
+                    }
+                }
+                KeyCode::Char('[') => {
+                    if app.current_tab == 2 && app.pomodoro.state == crate::pomodoro::PomodoroState::Idle {
+                        app.pomodoro.break_duration += 1;
+                        app.status_message = Some(format!("休息时长: {}分钟", app.pomodoro.break_duration));
+                    }
+                }
+                KeyCode::Char(']') => {
+                    if app.current_tab == 2 && app.pomodoro.state == crate::pomodoro::PomodoroState::Idle {
+                        if app.pomodoro.break_duration > 1 {
+                            app.pomodoro.break_duration -= 1;
+                            app.status_message = Some(format!("休息时长: {}分钟", app.pomodoro.break_duration));
+                        }
+                    }
+                }
 
                 // 帮助
                 KeyCode::Char('?') => {
@@ -614,8 +936,49 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
 fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Result<()> {
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => {
-            // 可以根据鼠标位置实现点击选择等功能
-            // 这里简单实现：点击切换标签页
+            let row = mouse.row;
+            let col = mouse.column;
+
+            // 点击标签页区域 (前3行)
+            if row <= 2 {
+                // 标签页宽度估算: 每个标签约20个字符
+                // Tab titles: "📝 Tasks (1)", "📓 Notes (2)", "🍅 Pomodoro (3)"
+                let tab_width = 20;
+                if col < tab_width {
+                    app.goto_tab(0);
+                } else if col < tab_width * 2 {
+                    app.goto_tab(1);
+                } else if col < tab_width * 3 {
+                    app.goto_tab(2);
+                }
+            }
+            // 点击内容区域 - 选择列表项
+            else if row > 3 {
+                // row 0-2: tabs
+                // row 3: 内容区开始
+                // 内容区内部有1行边框 + 1行标题
+                let content_start_row = 5; // 3 (tabs) + 1 (border) + 1 (title)
+
+                if row >= content_start_row {
+                    let item_index = (row - content_start_row) as usize;
+
+                    match app.current_tab {
+                        0 => {
+                            // 点击任务列表
+                            if item_index < app.tasks.len() {
+                                app.task_list_state.select(Some(item_index));
+                            }
+                        }
+                        1 => {
+                            // 点击便签列表
+                            if item_index < app.notes.len() {
+                                app.note_list_state.select(Some(item_index));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
         }
         MouseEventKind::ScrollDown => {
             match app.current_tab {
@@ -693,7 +1056,16 @@ fn render_tasks(f: &mut Frame, app: &mut App, area: Rect) {
                 TaskStatus::InProgress => "🔄",
                 TaskStatus::Todo => "⭕",
             };
-            let content = format!("{} {} {}", status_icon, priority_icon, task.title);
+
+            // 添加DDL显示
+            let ddl_info = if let Some(due_date) = task.due_date {
+                let local = due_date.with_timezone(&chrono::Local);
+                format!(" [DDL: {}]", local.format("%m-%d %H:%M"))
+            } else {
+                String::new()
+            };
+
+            let content = format!("{} {} {}{}", status_icon, priority_icon, task.title, ddl_info);
             ListItem::new(content)
         })
         .collect();
@@ -701,7 +1073,7 @@ fn render_tasks(f: &mut Frame, app: &mut App, area: Rect) {
     let help_text = if app.tasks.is_empty() {
         "按 'n' 创建新任务 | '?' 显示帮助"
     } else {
-        "j/k:导航 | Space:切换状态 | n:新建 | d:删除 | p:优先级 | ?:帮助"
+        "j/k:导航 | Space:切换状态 | t:设置DDL | p:优先级 | n:新建 | d:删除 | ?:帮助"
     };
 
     let list = List::new(items)
@@ -721,35 +1093,128 @@ fn render_tasks(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_stateful_widget(list, area, &mut app.task_list_state);
 }
 
-/// 渲染便签列表
+/// 渲染便签列表 (平铺卡片式)
 fn render_notes(f: &mut Frame, app: &mut App, area: Rect) {
-    let items: Vec<ListItem> = app
-        .notes
-        .iter()
-        .map(|note| ListItem::new(format!("📝 {}", note.title)))
-        .collect();
-
-    let help_text = if app.notes.is_empty() {
-        "按 'n' 创建新便签 | '?' 显示帮助"
-    } else {
-        "j/k:导航 | n:新建 | d:删除 | ?:帮助"
-    };
-
-    let list = List::new(items)
+    if app.notes.is_empty() {
+        let help = Paragraph::new(vec![
+            Line::from(""),
+            Line::from("还没有便签"),
+            Line::from(""),
+            Line::from("按 'n' 创建新便签"),
+        ])
+        .alignment(Alignment::Center)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!("便签列表 ({} 个)", app.notes.len()))
-                .title_bottom(help_text),
-        )
-        .highlight_style(
-            Style::default()
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("▶ ");
+                .title("便签墙")
+        );
+        f.render_widget(help, area);
+        return;
+    }
 
-    f.render_stateful_widget(list, area, &mut app.note_list_state);
+    // 计算卡片布局：每行3个卡片
+    let cards_per_row = 3;
+    let card_height = 8; // 每个卡片的高度
+    let num_rows = (app.notes.len() + cards_per_row - 1) / cards_per_row;
+
+    // 创建垂直布局
+    let mut row_constraints = vec![];
+    for _ in 0..num_rows {
+        row_constraints.push(Constraint::Length(card_height));
+    }
+    row_constraints.push(Constraint::Min(0)); // 剩余空间
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(row_constraints)
+        .margin(1)
+        .split(area);
+
+    // 渲染每一行的卡片
+    let selected_idx = app.note_list_state.selected().unwrap_or(0);
+
+    for row_idx in 0..num_rows {
+        let start_idx = row_idx * cards_per_row;
+        let end_idx = (start_idx + cards_per_row).min(app.notes.len());
+
+        // 创建该行的列布局
+        let mut col_constraints = vec![];
+        for _ in 0..(end_idx - start_idx) {
+            col_constraints.push(Constraint::Percentage(100 / cards_per_row as u16));
+        }
+
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(col_constraints)
+            .split(rows[row_idx]);
+
+        // 渲染该行的每个卡片
+        for (col_idx, note_idx) in (start_idx..end_idx).enumerate() {
+            let note = &app.notes[note_idx];
+            let is_selected = note_idx == selected_idx;
+
+            // 截取内容预览（前3行）
+            let content_preview: Vec<&str> = note.content
+                .lines()
+                .take(3)
+                .collect();
+
+            let mut lines = vec![];
+            lines.push(Line::from(Span::styled(
+                &note.title,
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(""));
+
+            for line in content_preview {
+                let truncated = if line.len() > 30 {
+                    format!("{}...", &line[0..27])
+                } else {
+                    line.to_string()
+                };
+                lines.push(Line::from(Span::styled(
+                    truncated,
+                    Style::default().fg(Color::Gray),
+                )));
+            }
+
+            let card_style = if is_selected {
+                Style::default().fg(Color::White).bg(Color::DarkGray)
+            } else {
+                Style::default().fg(Color::White)
+            };
+
+            let symbol = if is_selected { "▶ " } else { "" };
+            let title = format!("{}📝 Note #{}", symbol, note_idx + 1);
+
+            let card = Paragraph::new(lines)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(title)
+                        .style(card_style),
+                )
+                .wrap(Wrap { trim: true });
+
+            f.render_widget(card, cols[col_idx]);
+        }
+    }
+
+    // 渲染底部帮助栏
+    let help_area = Rect {
+        x: area.x,
+        y: area.y + area.height - 1,
+        width: area.width,
+        height: 1,
+    };
+
+    let help_text = "j/k:导航 | n:新建 | d:删除 | ?:帮助";
+    let help = Paragraph::new(help_text)
+        .style(Style::default().bg(Color::DarkGray).fg(Color::White));
+
+    f.render_widget(help, help_area);
 }
 
 /// 渲染番茄钟
@@ -763,7 +1228,7 @@ fn render_pomodoro(f: &mut Frame, app: &mut App, area: Rect) {
 
     let progress_bar = "█".repeat((app.pomodoro.progress() / 5.0) as usize);
 
-    let content = vec![
+    let mut content = vec![
         Line::from(""),
         Line::from(Span::styled(
             "🍅 番茄钟计时器",
@@ -791,11 +1256,36 @@ fn render_pomodoro(f: &mut Frame, app: &mut App, area: Rect) {
             app.pomodoro.progress()
         )),
         Line::from(""),
-        Line::from(""),
-        Line::from("快捷键:"),
-        Line::from("  s - 开始/暂停"),
-        Line::from("  S - 停止"),
     ];
+
+    // 统计信息
+    content.push(Line::from(""));
+    content.push(Line::from(Span::styled(
+        "📊 统计",
+        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+    )));
+    content.push(Line::from(format!("今日完成: {} 个番茄钟", app.pomodoro_completed_today)));
+    content.push(Line::from(format!("专注时长: {} 分钟", app.pomodoro_total_minutes)));
+    content.push(Line::from(""));
+
+    // 配置信息
+    content.push(Line::from(Span::styled(
+        "⚙️ 配置",
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+    )));
+    content.push(Line::from(format!("工作时长: {} 分钟", app.pomodoro.work_duration)));
+    content.push(Line::from(format!("休息时长: {} 分钟", app.pomodoro.break_duration)));
+    content.push(Line::from(""));
+    content.push(Line::from(""));
+
+    // 快捷键
+    content.push(Line::from("快捷键:"));
+    content.push(Line::from("  s       - 开始/暂停"));
+    content.push(Line::from("  S       - 停止"));
+    if app.pomodoro.state == crate::pomodoro::PomodoroState::Idle {
+        content.push(Line::from("  +/-     - 调整工作时长(±5分钟)"));
+        content.push(Line::from("  [ / ]   - 调整休息时长(±1分钟)"));
+    }
 
     let paragraph = Paragraph::new(content)
         .block(Block::default().borders(Borders::ALL))
@@ -844,21 +1334,61 @@ fn render_dialog(f: &mut Frame, app: &App) {
             ])
         }
         DialogType::CreateNote => {
+            let (current_field, instructions) = if app.input_title.is_empty() {
+                ("标题", "输入标题后按 Enter 继续")
+            } else {
+                ("内容", "输入内容后按 Enter 创建")
+            };
+
             ("创建新便签", vec![
                 Line::from(""),
-                Line::from("便签标题:"),
+                Line::from(vec![
+                    Span::styled("第1步: ", Style::default().fg(Color::Gray)),
+                    Span::styled(
+                        "便签标题",
+                        if app.input_title.is_empty() {
+                            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::Green)
+                        }
+                    ),
+                ]),
                 Line::from(Span::styled(
-                    if app.input_title.is_empty() { "(输入标题...)" } else { &app.input_title },
+                    if app.input_title.is_empty() {
+                        &app.input_buffer
+                    } else {
+                        &app.input_title
+                    },
                     Style::default().fg(Color::Yellow),
                 )),
                 Line::from(""),
-                Line::from("便签内容:"),
+                Line::from(vec![
+                    Span::styled("第2步: ", Style::default().fg(Color::Gray)),
+                    Span::styled(
+                        "便签内容",
+                        if !app.input_title.is_empty() {
+                            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::DarkGray)
+                        }
+                    ),
+                ]),
                 Line::from(Span::styled(
-                    &app.input_buffer,
+                    if !app.input_title.is_empty() {
+                        &app.input_buffer
+                    } else {
+                        ""
+                    },
                     Style::default().fg(Color::Cyan),
                 )),
                 Line::from(""),
-                Line::from("Enter:确认 | Esc:取消"),
+                Line::from(vec![
+                    Span::raw("当前: "),
+                    Span::styled(current_field, Style::default().fg(Color::Green)),
+                ]),
+                Line::from(""),
+                Line::from(instructions),
+                Line::from("Esc: 取消"),
             ])
         }
         DialogType::DeleteConfirm => {
@@ -894,6 +1424,7 @@ fn render_dialog(f: &mut Frame, app: &App) {
                 Line::from(Span::styled("任务操作", Style::default().add_modifier(Modifier::BOLD))),
                 Line::from("  n/a       : 新建"),
                 Line::from("  Space/x   : 切换完成状态"),
+                Line::from("  t         : 设置DDL时间"),
                 Line::from("  d         : 删除"),
                 Line::from("  p         : 切换优先级"),
                 Line::from(""),
@@ -906,6 +1437,74 @@ fn render_dialog(f: &mut Frame, app: &App) {
                 Line::from("  ?         : 显示此帮助"),
                 Line::from(""),
                 Line::from("按任意键关闭"),
+            ])
+        }
+        DialogType::SetDeadline => {
+            // 构建日期时间选择器显示
+            let field_names = ["年", "月", "日", "时", "分"];
+            let values = [
+                format!("{:04}", app.datetime_year),
+                format!("{:02}", app.datetime_month),
+                format!("{:02}", app.datetime_day),
+                format!("{:02}", app.datetime_hour),
+                format!("{:02}", app.datetime_minute),
+            ];
+
+            // 构建显示行，高亮当前选中的字段
+            let mut datetime_spans = vec![];
+            for i in 0..5 {
+                if i == app.datetime_picker_field {
+                    // 当前选中的字段：高亮显示
+                    datetime_spans.push(Span::styled(
+                        values[i].clone(),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
+                            .add_modifier(Modifier::UNDERLINED),
+                    ));
+                } else {
+                    datetime_spans.push(Span::raw(values[i].clone()));
+                }
+
+                // 添加分隔符
+                if i < 2 {
+                    datetime_spans.push(Span::raw("-"));
+                } else if i == 2 {
+                    datetime_spans.push(Span::raw("  "));
+                } else if i == 3 {
+                    datetime_spans.push(Span::raw(":"));
+                }
+            }
+
+            ("设置DDL时间", vec![
+                Line::from(""),
+                Line::from("使用方向键或 hjkl 调整时间:"),
+                Line::from("  ← / h : 上一个字段"),
+                Line::from("  → / l : 下一个字段"),
+                Line::from("  ↑ / k : 增加"),
+                Line::from("  ↓ / j : 减少"),
+                Line::from(""),
+                Line::from(vec![
+                    Span::raw("当前时间: "),
+                    Span::styled(
+                        chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "设置的DDL:",
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(datetime_spans),
+                Line::from(""),
+                Line::from(vec![
+                    Span::raw("("),
+                    Span::styled(field_names[app.datetime_picker_field], Style::default().fg(Color::Green)),
+                    Span::raw(")"),
+                ]),
+                Line::from(""),
+                Line::from("Enter: 确认 | Esc: 取消"),
             ])
         }
         _ => ("", vec![]),
