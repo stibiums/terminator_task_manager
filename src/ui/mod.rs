@@ -969,42 +969,153 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                 KeyCode::Char(':') => {
                     app.input_mode = InputMode::Command;
                     app.input_buffer.clear();
+                    app.number_prefix.clear();
+                    app.last_key = None;
                 }
 
-                // 标签页切换: Tab, Shift+Tab, 1-3
-                KeyCode::Tab => app.next_tab(),
-                KeyCode::BackTab => app.previous_tab(),
-                KeyCode::Char('1') => app.goto_tab(0),
-                KeyCode::Char('2') => app.goto_tab(1),
-                KeyCode::Char('3') => app.goto_tab(2),
+                // 数字前缀 (vim风格: 5j 向下移动5行)
+                KeyCode::Char(c @ '0'..='9') => {
+                    // 如果是在标签切换 (1/2/3) 且没有前缀，则切换标签
+                    if app.number_prefix.is_empty() && matches!(c, '1' | '2' | '3') {
+                        app.goto_tab((c as u8 - b'1') as usize);
+                        app.last_key = Some(key);
+                    } else {
+                        // 否则累积数字前缀
+                        app.number_prefix.push(c);
+                        app.last_key = Some(key);
+                    }
+                }
 
-                // vim导航: j/k, h/l, gg/G
-                KeyCode::Down | KeyCode::Char('j') => match app.current_tab {
-                    0 => app.next_task(),
-                    1 => app.next_note(),
-                    _ => {}
-                },
-                KeyCode::Up | KeyCode::Char('k') => match app.current_tab {
-                    0 => app.previous_task(),
-                    1 => app.previous_note(),
-                    _ => {}
-                },
-                KeyCode::Left | KeyCode::Char('h') => app.previous_tab(),
-                KeyCode::Right | KeyCode::Char('l') => app.next_tab(),
-                KeyCode::Char('g') => {
-                    // 等待下一个g (gg跳到顶部)
+                // 标签页切换: Tab, Shift+Tab
+                KeyCode::Tab => {
+                    app.next_tab();
+                    app.number_prefix.clear();
+                    app.last_key = Some(key);
+                }
+                KeyCode::BackTab => {
+                    app.previous_tab();
+                    app.number_prefix.clear();
+                    app.last_key = Some(key);
+                }
+
+                // vim导航: j/k, h/l, gg/G (支持数字前缀)
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let count = if app.number_prefix.is_empty() {
+                        1
+                    } else {
+                        app.number_prefix.parse::<usize>().unwrap_or(1)
+                    };
+
                     match app.current_tab {
-                        0 => app.goto_first_task(),
-                        1 => app.goto_first_note(),
+                        0 => {
+                            for _ in 0..count {
+                                app.next_task();
+                            }
+                        }
+                        1 => {
+                            for _ in 0..count {
+                                app.next_note();
+                            }
+                        }
                         _ => {}
+                    }
+                    app.number_prefix.clear();
+                    app.last_key = Some(key);
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    let count = if app.number_prefix.is_empty() {
+                        1
+                    } else {
+                        app.number_prefix.parse::<usize>().unwrap_or(1)
+                    };
+
+                    match app.current_tab {
+                        0 => {
+                            for _ in 0..count {
+                                app.previous_task();
+                            }
+                        }
+                        1 => {
+                            for _ in 0..count {
+                                app.previous_note();
+                            }
+                        }
+                        _ => {}
+                    }
+                    app.number_prefix.clear();
+                    app.last_key = Some(key);
+                }
+                KeyCode::Left | KeyCode::Char('h') => {
+                    let count = if app.number_prefix.is_empty() {
+                        1
+                    } else {
+                        app.number_prefix.parse::<usize>().unwrap_or(1)
+                    };
+
+                    for _ in 0..count {
+                        app.previous_tab();
+                    }
+                    app.number_prefix.clear();
+                    app.last_key = Some(key);
+                }
+                KeyCode::Right | KeyCode::Char('l') => {
+                    let count = if app.number_prefix.is_empty() {
+                        1
+                    } else {
+                        app.number_prefix.parse::<usize>().unwrap_or(1)
+                    };
+
+                    for _ in 0..count {
+                        app.next_tab();
+                    }
+                    app.number_prefix.clear();
+                    app.last_key = Some(key);
+                }
+                KeyCode::Char('g') => {
+                    // gg: 双击g跳到顶部
+                    if app.last_key == Some(KeyCode::Char('g')) {
+                        match app.current_tab {
+                            0 => app.goto_first_task(),
+                            1 => app.goto_first_note(),
+                            _ => {}
+                        }
+                        app.number_prefix.clear();
+                        app.last_key = None; // 清除，避免连续gg
+                    } else {
+                        // 第一次按g，等待第二次
+                        app.last_key = Some(key);
                     }
                 }
                 KeyCode::Char('G') => {
-                    match app.current_tab {
-                        0 => app.goto_last_task(),
-                        1 => app.goto_last_note(),
-                        _ => {}
+                    // G: 跳到末尾 (支持数字前缀如 5G 跳到第5行)
+                    if app.number_prefix.is_empty() {
+                        match app.current_tab {
+                            0 => app.goto_last_task(),
+                            1 => app.goto_last_note(),
+                            _ => {}
+                        }
+                    } else {
+                        // 数字G: 跳到指定行号
+                        if let Ok(line_num) = app.number_prefix.parse::<usize>() {
+                            if line_num > 0 {
+                                match app.current_tab {
+                                    0 => {
+                                        if line_num <= app.tasks.len() {
+                                            app.task_list_state.select(Some(line_num - 1));
+                                        }
+                                    }
+                                    1 => {
+                                        if line_num <= app.notes.len() {
+                                            app.note_list_state.select(Some(line_num - 1));
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
                     }
+                    app.number_prefix.clear();
+                    app.last_key = Some(key);
                 }
 
                 // 任务操作
@@ -1024,22 +1135,36 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                         }
                         _ => {}
                     }
+                    app.number_prefix.clear();
+                    app.last_key = Some(key);
                 }
                 KeyCode::Char(' ') | KeyCode::Char('x') => {
                     // 切换完成状态
                     if app.current_tab == 0 {
                         app.toggle_task_status()?;
                     }
+                    app.number_prefix.clear();
+                    app.last_key = Some(key);
                 }
                 KeyCode::Char('d') => {
-                    // 删除 (需要确认)
-                    app.show_dialog = DialogType::DeleteConfirm;
+                    // 删除 (需要确认) - vim风格: dd删除
+                    if app.last_key == Some(KeyCode::Char('d')) {
+                        // dd: 快速删除，直接显示确认对话框
+                        app.show_dialog = DialogType::DeleteConfirm;
+                        app.number_prefix.clear();
+                        app.last_key = None;
+                    } else {
+                        // 第一次按d，等待第二次
+                        app.last_key = Some(key);
+                    }
                 }
                 KeyCode::Char('p') => {
                     // 切换优先级
                     if app.current_tab == 0 {
                         app.cycle_priority()?;
                     }
+                    app.number_prefix.clear();
+                    app.last_key = Some(key);
                 }
                 KeyCode::Char('t') => {
                     // 设置DDL时间
@@ -1047,6 +1172,8 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                         app.init_datetime_picker();
                         app.show_dialog = DialogType::SetDeadline;
                     }
+                    app.number_prefix.clear();
+                    app.last_key = Some(key);
                 }
 
                 // 番茄钟操作 (在番茄钟标签页)
@@ -1068,11 +1195,15 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                             }
                         }
                     }
+                    app.number_prefix.clear();
+                    app.last_key = Some(key);
                 }
                 KeyCode::Char('S') => {
                     // 停止番茄钟
                     app.pomodoro.stop();
                     app.status_message = Some("番茄钟已停止".to_string());
+                    app.number_prefix.clear();
+                    app.last_key = Some(key);
                 }
                 // 番茄钟自定义时长 (在番茄钟标签页)
                 KeyCode::Char('+') | KeyCode::Char('=') => {
@@ -1123,9 +1254,27 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                 // 帮助
                 KeyCode::Char('?') => {
                     app.show_dialog = DialogType::Help;
+                    app.number_prefix.clear();
+                    app.last_key = Some(key);
                 }
 
-                _ => {}
+                // Escape键: 清除vim状态
+                KeyCode::Esc => {
+                    app.number_prefix.clear();
+                    app.last_key = None;
+                    app.status_message = None;
+                }
+
+                // q键: 退出
+                KeyCode::Char('q') => {
+                    app.should_quit = true;
+                }
+
+                _ => {
+                    // 其他未处理的键: 清除vim状态
+                    app.number_prefix.clear();
+                    app.last_key = Some(key);
+                }
             }
         }
         _ => {}
@@ -1508,12 +1657,31 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
             "-- INSERT --".to_string()
         }
         InputMode::Normal => {
-            // Normal模式：显示状态消息或帮助信息
-            if let Some(ref msg) = app.status_message {
-                msg.clone()
-            } else {
-                "Tab/h/l:切换标签 | n:新建 | d:删除 | p:优先级 | t:DDL | ?:帮助 | :q退出".to_string()
+            // Normal模式：显示vim状态、数字前缀或状态消息
+            let mut parts = vec![];
+
+            // 显示数字前缀（如果有）
+            if !app.number_prefix.is_empty() {
+                parts.push(format!("[{}]", app.number_prefix));
             }
+
+            // 显示等待中的按键（如 'g' 或 'd'）
+            if let Some(last_key) = app.last_key {
+                match last_key {
+                    KeyCode::Char('g') => parts.push("[g]".to_string()),
+                    KeyCode::Char('d') => parts.push("[d]".to_string()),
+                    _ => {}
+                }
+            }
+
+            // 显示状态消息或默认帮助
+            if let Some(ref msg) = app.status_message {
+                parts.push(msg.clone());
+            } else if parts.is_empty() {
+                parts.push("Tab/h/l:切换标签 | gg/G:首尾 | 5j:向下5行 | dd:删除 | n:新建 | ?:帮助 | :q退出".to_string());
+            }
+
+            parts.join(" ")
         }
     };
 
