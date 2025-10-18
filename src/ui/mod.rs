@@ -55,6 +55,8 @@ pub struct App {
     // Vim状态
     pub last_key: Option<KeyCode>,
     pub number_prefix: String,
+    // 番茄钟计时控制
+    pub last_tick_time: std::time::Instant,
 }
 
 /// 输入模式
@@ -112,6 +114,7 @@ impl Default for App {
             pomodoro_total_minutes: 0,
             last_key: None,
             number_prefix: String::new(),
+            last_tick_time: std::time::Instant::now(),
         }
     }
 }
@@ -649,19 +652,15 @@ fn run_ui_loop<B: ratatui::backend::Backend>(
     loop {
         terminal.draw(|f| ui(f, app))?;
 
-        // 标记本次循环是否应该执行 tick（避免鼠标移动事件干扰计时）
-        let mut should_tick = true;
-
-        if event::poll(std::time::Duration::from_millis(1000))? {
+        // 使用较短的 poll 间隔以提高响应性，但用时间戳控制 tick 频率
+        if event::poll(std::time::Duration::from_millis(100))? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     handle_key_event(app, key.code)?;
                 }
                 Event::Mouse(mouse) => {
-                    // 鼠标移动事件直接忽略，不执行 tick
-                    if mouse.kind == MouseEventKind::Moved {
-                        should_tick = false;
-                    } else {
+                    // 忽略鼠标移动事件，只处理点击和滚轮
+                    if mouse.kind != MouseEventKind::Moved {
                         handle_mouse_event(app, mouse)?;
                     }
                 }
@@ -669,12 +668,18 @@ fn run_ui_loop<B: ratatui::backend::Backend>(
             }
         }
 
-        // 番茄钟计时（仅在非鼠标移动事件时执行）
-        if should_tick
-            && (app.pomodoro.state == crate::pomodoro::PomodoroState::Working
-                || app.pomodoro.state == crate::pomodoro::PomodoroState::Break)
+        // 番茄钟计时：基于时间戳，确保严格按1秒间隔执行
+        if app.pomodoro.state == crate::pomodoro::PomodoroState::Working
+            || app.pomodoro.state == crate::pomodoro::PomodoroState::Break
         {
-            if !app.pomodoro.tick() {
+            let now = std::time::Instant::now();
+            let elapsed = now.duration_since(app.last_tick_time);
+
+            // 只有距离上次 tick 超过 1 秒才执行
+            if elapsed >= std::time::Duration::from_secs(1) {
+                app.last_tick_time = now;
+
+                if !app.pomodoro.tick() {
                 // 时间到，切换状态
                 match app.pomodoro.state {
                     crate::pomodoro::PomodoroState::Working => {
@@ -701,6 +706,7 @@ fn run_ui_loop<B: ratatui::backend::Backend>(
                         app.status_message = Some("番茄钟完成！".to_string());
                     }
                     _ => {}
+                }
                 }
             }
         }
