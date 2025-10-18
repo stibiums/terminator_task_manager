@@ -1283,50 +1283,69 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
     Ok(())
 }
 
-/// 处理鼠标事件
+/// 处理鼠标事件 (支持响应式布局)
 fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Result<()> {
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => {
             let row = mouse.row;
             let col = mouse.column;
 
-            // 点击标签页区域 (前3行)
-            if row <= 2 {
-                // 标签页宽度估算: 每个标签约20个字符
-                // Tab titles: "📝 Tasks (1)", "📓 Notes (2)", "🍅 Pomodoro (3)"
-                let tab_width = 20;
-                if col < tab_width {
-                    app.goto_tab(0);
-                } else if col < tab_width * 2 {
-                    app.goto_tab(1);
-                } else if col < tab_width * 3 {
-                    app.goto_tab(2);
+            // 获取终端尺寸以计算响应式布局
+            if let Ok((width, height)) = crossterm::terminal::size() {
+                // 重新计算布局区域，与ui函数保持一致
+                let full_rect = Rect::new(0, 0, width, height);
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(3),   // 标签页
+                        Constraint::Min(0),      // 内容
+                        Constraint::Length(2),   // 状态栏
+                    ])
+                    .split(full_rect);
+
+                let tabs_area = chunks[0];      // 标签页区域
+                let content_area = chunks[1];    // 内容区域
+
+                // 点击标签页区域
+                if row >= tabs_area.y && row < tabs_area.y + tabs_area.height {
+                    // 动态计算每个标签的宽度（考虑边框）
+                    let inner_width = tabs_area.width.saturating_sub(2); // 减去左右边框
+                    let tab_width = inner_width / 3; // 3个标签平分宽度
+
+                    // 计算点击位置在标签内的相对列位置（排除左边框）
+                    let relative_col = col.saturating_sub(tabs_area.x + 1);
+
+                    if relative_col < tab_width {
+                        app.goto_tab(0);
+                    } else if relative_col < tab_width * 2 {
+                        app.goto_tab(1);
+                    } else if relative_col < tab_width * 3 {
+                        app.goto_tab(2);
+                    }
                 }
-            }
-            // 点击内容区域 - 选择列表项
-            else if row > 3 {
-                // row 0-2: tabs
-                // row 3: 内容区开始
-                // 内容区内部有1行边框 + 1行标题
-                let content_start_row = 5; // 3 (tabs) + 1 (border) + 1 (title)
+                // 点击内容区域 - 选择列表项
+                else if row >= content_area.y && row < content_area.y + content_area.height {
+                    // 内容区内部结构:
+                    // 1行顶部边框 + 1行标题 + N行列表项 + 1行底部边框
+                    let border_and_title_offset = 2; // 顶部边框 + 标题行
+                    let content_start_row = content_area.y + border_and_title_offset;
 
-                if row >= content_start_row {
-                    let item_index = (row - content_start_row) as usize;
+                    if row >= content_start_row {
+                        let item_index = (row - content_start_row) as usize;
 
-                    match app.current_tab {
-                        0 => {
-                            // 点击任务列表
-                            if item_index < app.tasks.len() {
-                                app.task_list_state.select(Some(item_index));
+                        match app.current_tab {
+                            0 => {
+                                // 点击任务列表
+                                if item_index < app.tasks.len() {
+                                    app.task_list_state.select(Some(item_index));
+                                }
                             }
-                        }
-                        1 => {
-                            // 点击便签列表
-                            if item_index < app.notes.len() {
-                                app.note_list_state.select(Some(item_index));
+                            1 => {
+                                // 点击便签列表 - 便签使用卡片布局，暂不支持鼠标点击
+                                // 可以保留滚轮支持
                             }
+                            _ => {}
                         }
-                        _ => {}
                     }
                 }
             }
