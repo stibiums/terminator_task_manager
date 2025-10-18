@@ -1187,7 +1187,7 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                     app.last_key = Some(key);
                 }
 
-                // 番茄钟操作 (在番茄钟标签页)
+                // 番茄钟操作 (仅在番茄钟标签页有效)
                 KeyCode::Char('s') => {
                     if app.current_tab == 2 {
                         match app.pomodoro.state {
@@ -1209,57 +1209,96 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                     app.number_prefix.clear();
                     app.last_key = Some(key);
                 }
-                KeyCode::Char('S') => {
-                    // 停止番茄钟
-                    app.pomodoro.stop();
-                    app.status_message = Some("番茄钟已停止".to_string());
+                KeyCode::Char('S') | KeyCode::Char('c') => {
+                    // 停止/取消番茄钟 (S 或 c 键)
+                    if app.current_tab == 2 {
+                        // 只有在计时器运行或暂停时才需要停止
+                        if app.pomodoro.state != crate::pomodoro::PomodoroState::Idle {
+                            app.pomodoro.stop();
+                            app.status_message = Some("番茄钟已取消".to_string());
+                        }
+                    }
                     app.number_prefix.clear();
                     app.last_key = Some(key);
                 }
-                // 番茄钟自定义时长 (在番茄钟标签页)
+                // 番茄钟自定义时长 (仅在空闲状态下可调整)
                 KeyCode::Char('+') | KeyCode::Char('=') => {
-                    if app.current_tab == 2 && app.pomodoro.state == crate::pomodoro::PomodoroState::Idle {
-                        app.pomodoro.work_duration += 5;
-                        // 保存配置到数据库
-                        if let Ok(db) = Database::open(&app.db_path) {
-                            let _ = db.save_pomodoro_config(app.pomodoro.work_duration, app.pomodoro.break_duration);
-                        }
-                        app.status_message = Some(format!("工作时长: {}分钟 (已保存)", app.pomodoro.work_duration));
-                    }
-                }
-                KeyCode::Char('-') | KeyCode::Char('_') => {
-                    if app.current_tab == 2 && app.pomodoro.state == crate::pomodoro::PomodoroState::Idle {
-                        if app.pomodoro.work_duration > 5 {
-                            app.pomodoro.work_duration -= 5;
+                    if app.current_tab == 2 {
+                        if app.pomodoro.state == crate::pomodoro::PomodoroState::Idle {
+                            app.pomodoro.work_duration += 5;
+                            if app.pomodoro.work_duration > 120 {
+                                app.pomodoro.work_duration = 120; // 最大120分钟
+                            }
                             // 保存配置到数据库
                             if let Ok(db) = Database::open(&app.db_path) {
                                 let _ = db.save_pomodoro_config(app.pomodoro.work_duration, app.pomodoro.break_duration);
                             }
                             app.status_message = Some(format!("工作时长: {}分钟 (已保存)", app.pomodoro.work_duration));
+                        } else {
+                            app.status_message = Some("番茄钟运行中，无法调整时长！按S或c取消后再调整".to_string());
                         }
                     }
+                    app.number_prefix.clear();
+                    app.last_key = Some(key);
+                }
+                KeyCode::Char('-') | KeyCode::Char('_') => {
+                    if app.current_tab == 2 {
+                        if app.pomodoro.state == crate::pomodoro::PomodoroState::Idle {
+                            if app.pomodoro.work_duration > 5 {
+                                app.pomodoro.work_duration -= 5;
+                                // 保存配置到数据库
+                                if let Ok(db) = Database::open(&app.db_path) {
+                                    let _ = db.save_pomodoro_config(app.pomodoro.work_duration, app.pomodoro.break_duration);
+                                }
+                                app.status_message = Some(format!("工作时长: {}分钟 (已保存)", app.pomodoro.work_duration));
+                            } else {
+                                app.status_message = Some("工作时长最小为5分钟".to_string());
+                            }
+                        } else {
+                            app.status_message = Some("番茄钟运行中，无法调整时长！按S或c取消后再调整".to_string());
+                        }
+                    }
+                    app.number_prefix.clear();
+                    app.last_key = Some(key);
                 }
                 KeyCode::Char('[') => {
-                    if app.current_tab == 2 && app.pomodoro.state == crate::pomodoro::PomodoroState::Idle {
-                        app.pomodoro.break_duration += 1;
-                        // 保存配置到数据库
-                        if let Ok(db) = Database::open(&app.db_path) {
-                            let _ = db.save_pomodoro_config(app.pomodoro.work_duration, app.pomodoro.break_duration);
-                        }
-                        app.status_message = Some(format!("休息时长: {}分钟 (已保存)", app.pomodoro.break_duration));
-                    }
-                }
-                KeyCode::Char(']') => {
-                    if app.current_tab == 2 && app.pomodoro.state == crate::pomodoro::PomodoroState::Idle {
-                        if app.pomodoro.break_duration > 1 {
-                            app.pomodoro.break_duration -= 1;
+                    if app.current_tab == 2 {
+                        if app.pomodoro.state == crate::pomodoro::PomodoroState::Idle {
+                            app.pomodoro.break_duration += 1;
+                            if app.pomodoro.break_duration > 60 {
+                                app.pomodoro.break_duration = 60; // 最大60分钟
+                            }
                             // 保存配置到数据库
                             if let Ok(db) = Database::open(&app.db_path) {
                                 let _ = db.save_pomodoro_config(app.pomodoro.work_duration, app.pomodoro.break_duration);
                             }
                             app.status_message = Some(format!("休息时长: {}分钟 (已保存)", app.pomodoro.break_duration));
+                        } else {
+                            app.status_message = Some("番茄钟运行中，无法调整时长！按S或c取消后再调整".to_string());
                         }
                     }
+                    app.number_prefix.clear();
+                    app.last_key = Some(key);
+                }
+                KeyCode::Char(']') => {
+                    if app.current_tab == 2 {
+                        if app.pomodoro.state == crate::pomodoro::PomodoroState::Idle {
+                            if app.pomodoro.break_duration > 1 {
+                                app.pomodoro.break_duration -= 1;
+                                // 保存配置到数据库
+                                if let Ok(db) = Database::open(&app.db_path) {
+                                    let _ = db.save_pomodoro_config(app.pomodoro.work_duration, app.pomodoro.break_duration);
+                                }
+                                app.status_message = Some(format!("休息时长: {}分钟 (已保存)", app.pomodoro.break_duration));
+                            } else {
+                                app.status_message = Some("休息时长最小为1分钟".to_string());
+                            }
+                        } else {
+                            app.status_message = Some("番茄钟运行中，无法调整时长！按S或c取消后再调整".to_string());
+                        }
+                    }
+                    app.number_prefix.clear();
+                    app.last_key = Some(key);
                 }
 
                 // 帮助
@@ -1336,27 +1375,58 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Result<()> {
                 }
                 // 点击内容区域 - 选择列表项
                 else if row >= content_area.y && row < content_area.y + content_area.height {
-                    // 内容区内部结构:
-                    // 1行顶部边框 + 1行标题 + N行列表项 + 1行底部边框
-                    let border_and_title_offset = 2; // 顶部边框 + 标题行
-                    let content_start_row = content_area.y + border_and_title_offset;
+                    match app.current_tab {
+                        0 => {
+                            // 任务列表: Block有上边框(1行) + 标题行(1行) = 2行偏移
+                            // 底部还有边框(1行) + 帮助文本(1行，在边框内)
+                            let top_offset = 2; // 上边框 + 标题
+                            let bottom_offset = 2; // 底边框 + 底部帮助
 
-                    if row >= content_start_row {
-                        let item_index = (row - content_start_row) as usize;
+                            // 可点击的内容起始行
+                            let content_start_row = content_area.y + top_offset;
+                            let content_end_row = content_area.y + content_area.height - bottom_offset;
 
-                        match app.current_tab {
-                            0 => {
-                                // 点击任务列表
+                            if row >= content_start_row && row < content_end_row {
+                                let item_index = (row - content_start_row) as usize;
                                 if item_index < app.tasks.len() {
                                     app.task_list_state.select(Some(item_index));
                                 }
                             }
-                            1 => {
-                                // 点击便签列表 - 便签使用卡片布局，暂不支持鼠标点击
-                                // 可以保留滚轮支持
-                            }
-                            _ => {}
                         }
+                        1 => {
+                            // 便签列表 - 支持卡片点击
+                            // 卡片布局参数（需要与render_notes保持一致）
+                            let cards_per_row = 3;
+                            let card_height = 8;
+
+                            // 内容区有1行margin
+                            let margin = 1;
+                            let content_start_row = content_area.y + margin;
+
+                            if row >= content_start_row && !app.notes.is_empty() {
+                                let relative_row = row - content_start_row;
+                                let card_row = (relative_row / card_height) as usize;
+
+                                // 计算卡片所在的列（每行3个卡片）
+                                // 每个卡片占据 width/3 的宽度
+                                let content_width = content_area.width.saturating_sub(margin * 2);
+                                let card_width = content_width / cards_per_row as u16;
+                                let relative_col = col.saturating_sub(content_area.x + margin);
+                                let card_col = (relative_col / card_width).min(cards_per_row as u16 - 1) as usize;
+
+                                // 计算点击的便签索引
+                                let note_index = card_row * cards_per_row + card_col;
+
+                                if note_index < app.notes.len() {
+                                    app.note_list_state.select(Some(note_index));
+                                }
+                            }
+                        }
+                        2 => {
+                            // 番茄钟界面 - 可以考虑添加按钮点击支持
+                            // 当前暂不支持，保留滚轮功能即可
+                        }
+                        _ => {}
                     }
                 }
             }
