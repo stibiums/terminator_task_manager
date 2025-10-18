@@ -1336,6 +1336,10 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
 /// 处理鼠标事件 (支持响应式布局)
 fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Result<()> {
     match mouse.kind {
+        // 忽略鼠标移动事件，避免影响番茄钟计时
+        MouseEventKind::Moved => {
+            return Ok(());
+        }
         MouseEventKind::Down(MouseButton::Left) => {
             let row = mouse.row;
             let col = mouse.column;
