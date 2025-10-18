@@ -1531,6 +1531,32 @@ fn ui(f: &mut Frame, app: &mut App) {
 
 /// 渲染任务列表
 fn render_tasks(f: &mut Frame, app: &mut App, area: Rect) {
+    // 如果没有任务，显示欢迎提示
+    if app.tasks.is_empty() {
+        let help = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "📝 欢迎使用任务管理器",
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from("快捷键:"),
+            Line::from("  n/a/o - 创建新任务"),
+            Line::from("  :new <标题> - 命令创建任务"),
+            Line::from(""),
+            Line::from("开始创建你的第一个任务吧！"),
+        ])
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" 任务列表 ")
+                .border_style(Style::default().fg(Color::Cyan))
+        );
+        f.render_widget(help, area);
+        return;
+    }
+
     let items: Vec<ListItem> = app
         .tasks
         .iter()
@@ -1569,8 +1595,12 @@ fn render_tasks(f: &mut Frame, app: &mut App, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!("任务列表 ({} 个)", app.tasks.len()))
-                .title_bottom(help_text),
+                .border_style(Style::default().fg(Color::Cyan))
+                .title(Span::styled(
+                    format!(" 任务列表 ({} 个) ", app.tasks.len()),
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                ))
+                .title_bottom(Line::from(help_text).style(Style::default().fg(Color::Gray))),
         )
         .highlight_style(
             Style::default()
@@ -1587,15 +1617,25 @@ fn render_notes(f: &mut Frame, app: &mut App, area: Rect) {
     if app.notes.is_empty() {
         let help = Paragraph::new(vec![
             Line::from(""),
-            Line::from("还没有便签"),
+            Line::from(Span::styled(
+                "📓 便签墙",
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )),
             Line::from(""),
-            Line::from("按 'n' 创建新便签"),
+            Line::from("这里还没有便签"),
+            Line::from(""),
+            Line::from("快捷键:"),
+            Line::from("  n/a/o - 创建新便签"),
+            Line::from("  :new <内容> - 命令创建便签"),
+            Line::from(""),
+            Line::from("记录你的灵感和想法吧！"),
         ])
         .alignment(Alignment::Center)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("便签墙")
+                .border_style(Style::default().fg(Color::Magenta))
+                .title(" 便签墙 ")
         );
         f.render_widget(help, area);
         return;
@@ -1669,21 +1709,27 @@ fn render_notes(f: &mut Frame, app: &mut App, area: Rect) {
                 )));
             }
 
-            let card_style = if is_selected {
-                Style::default().fg(Color::White).bg(Color::DarkGray)
+            let (card_style, border_style) = if is_selected {
+                (
+                    Style::default().fg(Color::White),
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                )
             } else {
-                Style::default().fg(Color::White)
+                (
+                    Style::default().fg(Color::Gray),
+                    Style::default().fg(Color::Magenta),
+                )
             };
 
-            let symbol = if is_selected { "▶ " } else { "" };
-            let title = format!("{}📝 Note #{}", symbol, note_idx + 1);
+            let symbol = if is_selected { "▶ " } else { "  " };
+            let title = format!("{}📝 便签 #{}", symbol, note_idx + 1);
 
             let card = Paragraph::new(lines)
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title(title)
-                        .style(card_style),
+                        .border_style(border_style)
+                        .title(Span::styled(title, card_style)),
                 )
                 .wrap(Wrap { trim: true });
 
@@ -1777,7 +1823,15 @@ fn render_pomodoro(f: &mut Frame, app: &mut App, area: Rect) {
     }
 
     let paragraph = Paragraph::new(content)
-        .block(Block::default().borders(Borders::ALL))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Red))
+                .title(Span::styled(
+                    " 🍅 番茄钟 ",
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                ))
+        )
         .alignment(Alignment::Center);
 
     f.render_widget(paragraph, area);
@@ -1785,14 +1839,14 @@ fn render_pomodoro(f: &mut Frame, app: &mut App, area: Rect) {
 
 /// 渲染状态栏
 fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
-    let status = match app.input_mode {
+    let (mode_indicator, status_text, bar_style) = match app.input_mode {
         InputMode::Command => {
             // Command模式：显示正在输入的命令
-            format!(":{}", app.input_buffer)
+            ("COMMAND", format!(":{}", app.input_buffer), Style::default().bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD))
         }
         InputMode::Insert => {
             // Insert模式：显示模式名称
-            "-- INSERT --".to_string()
+            ("INSERT", "正在编辑...".to_string(), Style::default().bg(Color::Green).fg(Color::Black).add_modifier(Modifier::BOLD))
         }
         InputMode::Normal => {
             // Normal模式：显示vim状态、数字前缀或状态消息
@@ -1813,18 +1867,25 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
             }
 
             // 显示状态消息或默认帮助
-            if let Some(ref msg) = app.status_message {
-                parts.push(msg.clone());
+            let message = if let Some(ref msg) = app.status_message {
+                msg.clone()
             } else if parts.is_empty() {
-                parts.push("Tab/h/l:切换标签 | gg/G:首尾 | 5j:向下5行 | dd:删除 | n:新建 | ?:帮助 | :q退出".to_string());
-            }
+                "Tab:切换标签 | gg/G:首尾 | 5j:向下5行 | dd:删除 | n:新建 | ?:帮助 | :q退出".to_string()
+            } else {
+                parts.join(" ")
+            };
 
-            parts.join(" ")
+            ("NORMAL", message, Style::default().bg(Color::DarkGray).fg(Color::White))
         }
     };
 
-    let status_bar = Paragraph::new(status)
-        .style(Style::default().bg(Color::DarkGray).fg(Color::White))
+    let status_content = vec![
+        Span::styled(format!(" {} ", mode_indicator), bar_style),
+        Span::raw(" "),
+        Span::raw(status_text),
+    ];
+
+    let status_bar = Paragraph::new(Line::from(status_content))
         .block(Block::default());
 
     f.render_widget(status_bar, area);
