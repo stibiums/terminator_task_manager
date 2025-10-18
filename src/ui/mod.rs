@@ -57,6 +57,8 @@ pub struct App {
     pub number_prefix: String,
     // 番茄钟计时控制
     pub last_tick_time: std::time::Instant,
+    // 提示消息时间戳（用于自动消失）
+    pub status_message_time: Option<std::time::Instant>,
 }
 
 /// 输入模式
@@ -115,6 +117,7 @@ impl Default for App {
             last_key: None,
             number_prefix: String::new(),
             last_tick_time: std::time::Instant::now(),
+            status_message_time: None,
         }
     }
 }
@@ -127,6 +130,18 @@ impl App {
         };
         app.reload_data()?;
         Ok(app)
+    }
+
+    /// 设置状态消息（会自动记录时间戳，3秒后自动消失）
+    pub fn set_status_message(&mut self, message: String) {
+        self.status_message = Some(message);
+        self.status_message_time = Some(std::time::Instant::now());
+    }
+
+    /// 清除状态消息
+    pub fn clear_status_message(&mut self) {
+        self.status_message = None;
+        self.status_message_time = None;
     }
 
     /// 从数据库重新加载数据
@@ -360,7 +375,7 @@ impl App {
 
             let db = Database::open(&db_path)?;
             db.update_task(task)?;
-            self.status_message = Some(format!("任务状态已更新"));
+            self.set_status_message("任务状态已更新".to_string());
         }
 
         // 立即重新排序
@@ -382,7 +397,7 @@ impl App {
         self.show_dialog = DialogType::None;
         self.input_mode = InputMode::Normal;
         self.reload_data()?;
-        self.status_message = Some(format!("任务 #{} 已创建", id));
+        self.set_status_message(format!("任务 #{} 已创建", id));
 
         Ok(())
     }
@@ -394,7 +409,7 @@ impl App {
                 let db = Database::open(&self.db_path)?;
                 db.delete_task(id)?;
                 self.reload_data()?;
-                self.status_message = Some(format!("任务 #{} 已删除", id));
+                self.set_status_message(format!("任务 #{} 已删除", id));
             }
         }
         self.show_dialog = DialogType::None;
@@ -416,7 +431,7 @@ impl App {
         self.show_dialog = DialogType::None;
         self.input_mode = InputMode::Normal;
         self.reload_data()?;
-        self.status_message = Some(format!("便签 #{} 已创建", id));
+        self.set_status_message(format!("便签 #{} 已创建", id));
 
         Ok(())
     }
@@ -428,7 +443,7 @@ impl App {
                 let db = Database::open(&self.db_path)?;
                 db.delete_note(id)?;
                 self.reload_data()?;
-                self.status_message = Some(format!("便签 #{} 已删除", id));
+                self.set_status_message(format!("便签 #{} 已删除", id));
             }
         }
         Ok(())
@@ -448,7 +463,7 @@ impl App {
 
             let db = Database::open(&db_path)?;
             db.update_task(task)?;
-            self.status_message = Some(format!("优先级已更新"));
+            self.set_status_message("优先级已更新".to_string());
         }
 
         // 立即重新排序
@@ -601,12 +616,12 @@ impl App {
 
                 let db = Database::open(&db_path)?;
                 db.update_task(task)?;
-                self.status_message = Some(format!(
+                self.set_status_message(format!(
                     "DDL已设置: {}-{:02}-{:02} {:02}:{:02}",
                     year, month, day, hour, minute
                 ));
             } else {
-                self.status_message = Some("无效的日期时间".to_string());
+                self.set_status_message("无效的日期时间".to_string());
             }
         }
 
@@ -658,13 +673,21 @@ fn run_ui_loop<B: ratatui::backend::Backend>(
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     handle_key_event(app, key.code)?;
                 }
-                Event::Mouse(mouse) => {
-                    // 忽略鼠标移动事件，只处理点击和滚轮
-                    if mouse.kind != MouseEventKind::Moved {
-                        handle_mouse_event(app, mouse)?;
-                    }
-                }
+                // 暂时禁用鼠标响应，后续再完善
+                // Event::Mouse(mouse) => {
+                //     if mouse.kind != MouseEventKind::Moved {
+                //         handle_mouse_event(app, mouse)?;
+                //     }
+                // }
                 _ => {}
+            }
+        }
+
+        // 检查并清除过期的状态消息（3秒后自动消失）
+        if let Some(msg_time) = app.status_message_time {
+            let now = std::time::Instant::now();
+            if now.duration_since(msg_time) >= std::time::Duration::from_secs(3) {
+                app.clear_status_message();
             }
         }
 
@@ -699,11 +722,11 @@ fn run_ui_loop<B: ratatui::backend::Backend>(
                         app.pomodoro_completed_today += 1;
                         app.pomodoro_total_minutes += app.pomodoro.work_duration as usize;
                         app.pomodoro.start_break();
-                        app.status_message = Some("🎉 工作时段完成！开始休息！".to_string());
+                        app.set_status_message("🎉 工作时段完成！开始休息！".to_string());
                     }
                     crate::pomodoro::PomodoroState::Break => {
                         app.pomodoro.stop();
-                        app.status_message = Some("番茄钟完成！".to_string());
+                        app.set_status_message("番茄钟完成！".to_string());
                     }
                     _ => {}
                 }
@@ -721,7 +744,7 @@ fn run_ui_loop<B: ratatui::backend::Backend>(
 
 /// 执行vim命令
 fn execute_command(app: &mut App) -> Result<()> {
-    let cmd = app.input_buffer.trim();
+    let cmd = app.input_buffer.trim().to_string();
 
     // 空命令
     if cmd.is_empty() {
@@ -735,13 +758,13 @@ fn execute_command(app: &mut App) -> Result<()> {
                 0 => {
                     if line_num <= app.tasks.len() {
                         app.task_list_state.select(Some(line_num - 1));
-                        app.status_message = Some(format!("跳转到第{}行", line_num));
+                        app.set_status_message(format!("跳转到第{}行", line_num));
                     }
                 }
                 1 => {
                     if line_num <= app.notes.len() {
                         app.note_list_state.select(Some(line_num - 1));
-                        app.status_message = Some(format!("跳转到第{}行", line_num));
+                        app.set_status_message(format!("跳转到第{}行", line_num));
                     }
                 }
                 _ => {}
@@ -779,14 +802,14 @@ fn execute_command(app: &mut App) -> Result<()> {
                         let task = Task::new(title.clone());
                         let id = db.create_task(&task)?;
                         app.reload_data()?;
-                        app.status_message = Some(format!("任务 #{} 已创建", id));
+                        app.set_status_message(format!("任务 #{} 已创建", id));
                     }
                     1 => {
                         let db = Database::open(&app.db_path)?;
                         let note = Note::new("新便签".to_string(), title.clone());
                         let id = db.create_note(&note)?;
                         app.reload_data()?;
-                        app.status_message = Some(format!("便签 #{} 已创建", id));
+                        app.set_status_message(format!("便签 #{} 已创建", id));
                     }
                     _ => {}
                 }
@@ -808,7 +831,7 @@ fn execute_command(app: &mut App) -> Result<()> {
         // 编辑命令
         "e" | "edit" => {
             // TODO: 实现编辑功能
-            app.status_message = Some("编辑功能即将推出".to_string());
+            app.set_status_message("编辑功能即将推出".to_string());
         }
 
         // 番茄钟配置命令
@@ -827,7 +850,7 @@ fn execute_command(app: &mut App) -> Result<()> {
                                                 app.pomodoro.break_duration
                                             );
                                         }
-                                        app.status_message = Some(format!("工作时长设置为 {} 分钟", minutes));
+                                        app.set_status_message(format!("工作时长设置为 {} 分钟", minutes));
                                     }
                                 }
                             }
@@ -841,7 +864,7 @@ fn execute_command(app: &mut App) -> Result<()> {
                                                 app.pomodoro.break_duration
                                             );
                                         }
-                                        app.status_message = Some(format!("休息时长设置为 {} 分钟", minutes));
+                                        app.set_status_message(format!("休息时长设置为 {} 分钟", minutes));
                                     }
                                 }
                             }
@@ -850,7 +873,7 @@ fn execute_command(app: &mut App) -> Result<()> {
                     }
                 }
             } else {
-                app.status_message = Some(format!(
+                app.set_status_message(format!(
                     "番茄钟配置: 工作{}分钟 休息{}分钟 | 用法: :pomo work=25 break=5",
                     app.pomodoro.work_duration,
                     app.pomodoro.break_duration
@@ -865,7 +888,7 @@ fn execute_command(app: &mut App) -> Result<()> {
 
         // 未知命令
         _ => {
-            app.status_message = Some(format!("未知命令: {}", cmd));
+            app.set_status_message(format!("未知命令: {}", cmd));
         }
     }
 
@@ -1208,16 +1231,16 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                         match app.pomodoro.state {
                             crate::pomodoro::PomodoroState::Idle => {
                                 app.pomodoro.start_work(None);
-                                app.status_message = Some("番茄钟开始！".to_string());
+                                app.set_status_message("番茄钟开始！".to_string());
                             }
                             crate::pomodoro::PomodoroState::Working
                             | crate::pomodoro::PomodoroState::Break => {
                                 app.pomodoro.pause();
-                                app.status_message = Some("已暂停".to_string());
+                                app.set_status_message("已暂停".to_string());
                             }
                             crate::pomodoro::PomodoroState::Paused => {
                                 app.pomodoro.resume();
-                                app.status_message = Some("继续计时".to_string());
+                                app.set_status_message("继续计时".to_string());
                             }
                         }
                     }
@@ -1230,7 +1253,7 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                         // 只有在计时器运行或暂停时才需要停止
                         if app.pomodoro.state != crate::pomodoro::PomodoroState::Idle {
                             app.pomodoro.stop();
-                            app.status_message = Some("番茄钟已取消".to_string());
+                            app.set_status_message("番茄钟已取消".to_string());
                         }
                     }
                     app.number_prefix.clear();
@@ -1248,9 +1271,9 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                             if let Ok(db) = Database::open(&app.db_path) {
                                 let _ = db.save_pomodoro_config(app.pomodoro.work_duration, app.pomodoro.break_duration);
                             }
-                            app.status_message = Some(format!("工作时长: {}分钟 (已保存)", app.pomodoro.work_duration));
+                            app.set_status_message(format!("工作时长: {}分钟 (已保存)", app.pomodoro.work_duration));
                         } else {
-                            app.status_message = Some("番茄钟运行中，无法调整时长！按S或c取消后再调整".to_string());
+                            app.set_status_message("番茄钟运行中，无法调整时长！按S或c取消后再调整".to_string());
                         }
                     }
                     app.number_prefix.clear();
@@ -1265,12 +1288,12 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                                 if let Ok(db) = Database::open(&app.db_path) {
                                     let _ = db.save_pomodoro_config(app.pomodoro.work_duration, app.pomodoro.break_duration);
                                 }
-                                app.status_message = Some(format!("工作时长: {}分钟 (已保存)", app.pomodoro.work_duration));
+                                app.set_status_message(format!("工作时长: {}分钟 (已保存)", app.pomodoro.work_duration));
                             } else {
-                                app.status_message = Some("工作时长最小为5分钟".to_string());
+                                app.set_status_message("工作时长最小为5分钟".to_string());
                             }
                         } else {
-                            app.status_message = Some("番茄钟运行中，无法调整时长！按S或c取消后再调整".to_string());
+                            app.set_status_message("番茄钟运行中，无法调整时长！按S或c取消后再调整".to_string());
                         }
                     }
                     app.number_prefix.clear();
@@ -1287,9 +1310,9 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                             if let Ok(db) = Database::open(&app.db_path) {
                                 let _ = db.save_pomodoro_config(app.pomodoro.work_duration, app.pomodoro.break_duration);
                             }
-                            app.status_message = Some(format!("休息时长: {}分钟 (已保存)", app.pomodoro.break_duration));
+                            app.set_status_message(format!("休息时长: {}分钟 (已保存)", app.pomodoro.break_duration));
                         } else {
-                            app.status_message = Some("番茄钟运行中，无法调整时长！按S或c取消后再调整".to_string());
+                            app.set_status_message("番茄钟运行中，无法调整时长！按S或c取消后再调整".to_string());
                         }
                     }
                     app.number_prefix.clear();
@@ -1304,12 +1327,12 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                                 if let Ok(db) = Database::open(&app.db_path) {
                                     let _ = db.save_pomodoro_config(app.pomodoro.work_duration, app.pomodoro.break_duration);
                                 }
-                                app.status_message = Some(format!("休息时长: {}分钟 (已保存)", app.pomodoro.break_duration));
+                                app.set_status_message(format!("休息时长: {}分钟 (已保存)", app.pomodoro.break_duration));
                             } else {
-                                app.status_message = Some("休息时长最小为1分钟".to_string());
+                                app.set_status_message("休息时长最小为1分钟".to_string());
                             }
                         } else {
-                            app.status_message = Some("番茄钟运行中，无法调整时长！按S或c取消后再调整".to_string());
+                            app.set_status_message("番茄钟运行中，无法调整时长！按S或c取消后再调整".to_string());
                         }
                     }
                     app.number_prefix.clear();
