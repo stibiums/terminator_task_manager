@@ -156,12 +156,16 @@ impl App {
         Ok(())
     }
 
-    /// 任务自动排序
+    /// 任务自动排序（保持选中状态）
     /// 排序规则：
     /// 1. 未完成的任务优先（按状态：InProgress > Todo > Completed）
     /// 2. 在同状态下，按优先级排序（High > Medium > Low）
     /// 3. 在同优先级下，按DDL时间排序（有DDL的优先，且时间早的优先）
     fn sort_tasks(&mut self) {
+        // 保存当前选中任务的ID
+        let selected_task_id = self.selected_task().and_then(|t| t.id);
+
+        // 执行排序
         self.tasks.sort_by(|a, b| {
             use std::cmp::Ordering;
 
@@ -191,6 +195,13 @@ impl App {
                 (None, None) => Ordering::Equal,                 // 都没有DDL，相等
             }
         });
+
+        // 恢复选中状态：找到之前选中任务的新位置
+        if let Some(task_id) = selected_task_id {
+            if let Some(new_index) = self.tasks.iter().position(|t| t.id == Some(task_id)) {
+                self.task_list_state.select(Some(new_index));
+            }
+        }
     }
 
     /// 切换标签页
