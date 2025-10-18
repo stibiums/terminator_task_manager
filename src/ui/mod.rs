@@ -649,21 +649,30 @@ fn run_ui_loop<B: ratatui::backend::Backend>(
     loop {
         terminal.draw(|f| ui(f, app))?;
 
+        // 标记本次循环是否应该执行 tick（避免鼠标移动事件干扰计时）
+        let mut should_tick = true;
+
         if event::poll(std::time::Duration::from_millis(1000))? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     handle_key_event(app, key.code)?;
                 }
                 Event::Mouse(mouse) => {
-                    handle_mouse_event(app, mouse)?;
+                    // 鼠标移动事件直接忽略，不执行 tick
+                    if mouse.kind == MouseEventKind::Moved {
+                        should_tick = false;
+                    } else {
+                        handle_mouse_event(app, mouse)?;
+                    }
                 }
                 _ => {}
             }
         }
 
-        // 番茄钟计时
-        if app.pomodoro.state == crate::pomodoro::PomodoroState::Working
-            || app.pomodoro.state == crate::pomodoro::PomodoroState::Break
+        // 番茄钟计时（仅在非鼠标移动事件时执行）
+        if should_tick
+            && (app.pomodoro.state == crate::pomodoro::PomodoroState::Working
+                || app.pomodoro.state == crate::pomodoro::PomodoroState::Break)
         {
             if !app.pomodoro.tick() {
                 // 时间到，切换状态
@@ -1336,10 +1345,6 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
 /// 处理鼠标事件 (支持响应式布局)
 fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Result<()> {
     match mouse.kind {
-        // 忽略鼠标移动事件，避免影响番茄钟计时
-        MouseEventKind::Moved => {
-            return Ok(());
-        }
         MouseEventKind::Down(MouseButton::Left) => {
             let row = mouse.row;
             let col = mouse.column;
