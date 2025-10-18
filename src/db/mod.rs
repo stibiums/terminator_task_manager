@@ -56,6 +56,11 @@ impl Database {
                 FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE SET NULL
             );
 
+            CREATE TABLE IF NOT EXISTS config (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date);
             CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
             CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority);
@@ -317,5 +322,41 @@ impl Database {
         )?;
 
         Ok((count as usize, total_minutes.unwrap_or(0) as usize))
+    }
+
+    // ==================== Config ====================
+
+    /// 获取配置项
+    pub fn get_config(&self, key: &str) -> Result<Option<String>> {
+        let mut stmt = self.conn.prepare("SELECT value FROM config WHERE key = ?1")?;
+        let result = stmt.query_row(params![key], |row| row.get(0)).ok();
+        Ok(result)
+    }
+
+    /// 设置配置项
+    pub fn set_config(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO config (key, value) VALUES (?1, ?2)",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// 获取番茄钟配置
+    pub fn get_pomodoro_config(&self) -> Result<(i32, i32)> {
+        let work = self.get_config("pomodoro_work_duration")?
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(25);
+        let break_time = self.get_config("pomodoro_break_duration")?
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(5);
+        Ok((work, break_time))
+    }
+
+    /// 保存番茄钟配置
+    pub fn save_pomodoro_config(&self, work_duration: i32, break_duration: i32) -> Result<()> {
+        self.set_config("pomodoro_work_duration", &work_duration.to_string())?;
+        self.set_config("pomodoro_break_duration", &break_duration.to_string())?;
+        Ok(())
     }
 }

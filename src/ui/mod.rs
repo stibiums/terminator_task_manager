@@ -52,6 +52,9 @@ pub struct App {
     // 番茄钟统计
     pub pomodoro_completed_today: usize,
     pub pomodoro_total_minutes: usize,
+    // Vim状态
+    pub last_key: Option<KeyCode>,
+    pub number_prefix: String,
 }
 
 /// 输入模式
@@ -107,6 +110,8 @@ impl Default for App {
             datetime_minute: now.minute(),
             pomodoro_completed_today: 0,
             pomodoro_total_minutes: 0,
+            last_key: None,
+            number_prefix: String::new(),
         }
     }
 }
@@ -131,6 +136,11 @@ impl App {
         let (completed, minutes) = db.get_today_pomodoro_stats()?;
         self.pomodoro_completed_today = completed;
         self.pomodoro_total_minutes = minutes;
+
+        // 加载番茄钟配置
+        let (work, break_time) = db.get_pomodoro_config()?;
+        self.pomodoro.work_duration = work;
+        self.pomodoro.break_duration = break_time;
 
         // 自动排序任务
         self.sort_tasks();
@@ -683,6 +693,159 @@ fn run_ui_loop<B: ratatui::backend::Backend>(
     Ok(())
 }
 
+/// 执行vim命令
+fn execute_command(app: &mut App) -> Result<()> {
+    let cmd = app.input_buffer.trim();
+
+    // 空命令
+    if cmd.is_empty() {
+        return Ok(());
+    }
+
+    // 数字跳转: :5 跳到第5行
+    if let Ok(line_num) = cmd.parse::<usize>() {
+        if line_num > 0 {
+            match app.current_tab {
+                0 => {
+                    if line_num <= app.tasks.len() {
+                        app.task_list_state.select(Some(line_num - 1));
+                        app.status_message = Some(format!("跳转到第{}行", line_num));
+                    }
+                }
+                1 => {
+                    if line_num <= app.notes.len() {
+                        app.note_list_state.select(Some(line_num - 1));
+                        app.status_message = Some(format!("跳转到第{}行", line_num));
+                    }
+                }
+                _ => {}
+            }
+        }
+        return Ok(());
+    }
+
+    // 解析命令和参数
+    let parts: Vec<&str> = cmd.split_whitespace().collect();
+    let command = parts.first().unwrap_or(&"");
+
+    match *command {
+        // 退出命令
+        "q" | "quit" => {
+            app.should_quit = true;
+        }
+        "wq" | "x" => {
+            // 保存并退出 (虽然我们是自动保存)
+            app.should_quit = true;
+        }
+
+        // 删除命令
+        "d" | "delete" => {
+            app.show_dialog = DialogType::DeleteConfirm;
+        }
+
+        // 新建命令
+        "new" | "n" => {
+            let title = parts[1..].join(" ");
+            if !title.is_empty() {
+                match app.current_tab {
+                    0 => {
+                        let db = Database::open(&app.db_path)?;
+                        let task = Task::new(title.clone());
+                        let id = db.create_task(&task)?;
+                        app.reload_data()?;
+                        app.status_message = Some(format!("任务 #{} 已创建", id));
+                    }
+                    1 => {
+                        let db = Database::open(&app.db_path)?;
+                        let note = Note::new("新便签".to_string(), title.clone());
+                        let id = db.create_note(&note)?;
+                        app.reload_data()?;
+                        app.status_message = Some(format!("便签 #{} 已创建", id));
+                    }
+                    _ => {}
+                }
+            } else {
+                match app.current_tab {
+                    0 => {
+                        app.show_dialog = DialogType::CreateTask;
+                        app.input_mode = InputMode::Insert;
+                    }
+                    1 => {
+                        app.show_dialog = DialogType::CreateNote;
+                        app.input_mode = InputMode::Insert;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // 编辑命令
+        "e" | "edit" => {
+            // TODO: 实现编辑功能
+            app.status_message = Some("编辑功能即将推出".to_string());
+        }
+
+        // 番茄钟配置命令
+        "pomo" | "pomodoro" => {
+            if parts.len() > 1 {
+                for arg in &parts[1..] {
+                    if let Some((key, value)) = arg.split_once('=') {
+                        match key {
+                            "work" | "w" => {
+                                if let Ok(minutes) = value.parse::<i32>() {
+                                    if minutes >= 1 && minutes <= 120 {
+                                        app.pomodoro.work_duration = minutes;
+                                        if let Ok(db) = Database::open(&app.db_path) {
+                                            let _ = db.save_pomodoro_config(
+                                                app.pomodoro.work_duration,
+                                                app.pomodoro.break_duration
+                                            );
+                                        }
+                                        app.status_message = Some(format!("工作时长设置为 {} 分钟", minutes));
+                                    }
+                                }
+                            }
+                            "break" | "b" => {
+                                if let Ok(minutes) = value.parse::<i32>() {
+                                    if minutes >= 1 && minutes <= 60 {
+                                        app.pomodoro.break_duration = minutes;
+                                        if let Ok(db) = Database::open(&app.db_path) {
+                                            let _ = db.save_pomodoro_config(
+                                                app.pomodoro.work_duration,
+                                                app.pomodoro.break_duration
+                                            );
+                                        }
+                                        app.status_message = Some(format!("休息时长设置为 {} 分钟", minutes));
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            } else {
+                app.status_message = Some(format!(
+                    "番茄钟配置: 工作{}分钟 休息{}分钟 | 用法: :pomo work=25 break=5",
+                    app.pomodoro.work_duration,
+                    app.pomodoro.break_duration
+                ));
+            }
+        }
+
+        // 帮助命令
+        "h" | "help" => {
+            app.show_dialog = DialogType::Help;
+        }
+
+        // 未知命令
+        _ => {
+            app.status_message = Some(format!("未知命令: {}", cmd));
+        }
+    }
+
+    Ok(())
+}
+
 /// 处理键盘事件
 fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
     // 对话框模式
@@ -779,9 +942,7 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
         match key {
             KeyCode::Enter => {
                 // 执行命令
-                if app.input_buffer == "q" || app.input_buffer == "quit" {
-                    app.should_quit = true;
-                }
+                execute_command(app)?;
                 app.input_buffer.clear();
                 app.input_mode = InputMode::Normal;
             }
@@ -917,28 +1078,44 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                 KeyCode::Char('+') | KeyCode::Char('=') => {
                     if app.current_tab == 2 && app.pomodoro.state == crate::pomodoro::PomodoroState::Idle {
                         app.pomodoro.work_duration += 5;
-                        app.status_message = Some(format!("工作时长: {}分钟", app.pomodoro.work_duration));
+                        // 保存配置到数据库
+                        if let Ok(db) = Database::open(&app.db_path) {
+                            let _ = db.save_pomodoro_config(app.pomodoro.work_duration, app.pomodoro.break_duration);
+                        }
+                        app.status_message = Some(format!("工作时长: {}分钟 (已保存)", app.pomodoro.work_duration));
                     }
                 }
                 KeyCode::Char('-') | KeyCode::Char('_') => {
                     if app.current_tab == 2 && app.pomodoro.state == crate::pomodoro::PomodoroState::Idle {
                         if app.pomodoro.work_duration > 5 {
                             app.pomodoro.work_duration -= 5;
-                            app.status_message = Some(format!("工作时长: {}分钟", app.pomodoro.work_duration));
+                            // 保存配置到数据库
+                            if let Ok(db) = Database::open(&app.db_path) {
+                                let _ = db.save_pomodoro_config(app.pomodoro.work_duration, app.pomodoro.break_duration);
+                            }
+                            app.status_message = Some(format!("工作时长: {}分钟 (已保存)", app.pomodoro.work_duration));
                         }
                     }
                 }
                 KeyCode::Char('[') => {
                     if app.current_tab == 2 && app.pomodoro.state == crate::pomodoro::PomodoroState::Idle {
                         app.pomodoro.break_duration += 1;
-                        app.status_message = Some(format!("休息时长: {}分钟", app.pomodoro.break_duration));
+                        // 保存配置到数据库
+                        if let Ok(db) = Database::open(&app.db_path) {
+                            let _ = db.save_pomodoro_config(app.pomodoro.work_duration, app.pomodoro.break_duration);
+                        }
+                        app.status_message = Some(format!("休息时长: {}分钟 (已保存)", app.pomodoro.break_duration));
                     }
                 }
                 KeyCode::Char(']') => {
                     if app.current_tab == 2 && app.pomodoro.state == crate::pomodoro::PomodoroState::Idle {
                         if app.pomodoro.break_duration > 1 {
                             app.pomodoro.break_duration -= 1;
-                            app.status_message = Some(format!("休息时长: {}分钟", app.pomodoro.break_duration));
+                            // 保存配置到数据库
+                            if let Ok(db) = Database::open(&app.db_path) {
+                                let _ = db.save_pomodoro_config(app.pomodoro.work_duration, app.pomodoro.break_duration);
+                            }
+                            app.status_message = Some(format!("休息时长: {}分钟 (已保存)", app.pomodoro.break_duration));
                         }
                     }
                 }
