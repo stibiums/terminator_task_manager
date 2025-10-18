@@ -1119,8 +1119,8 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                 }
 
                 // 任务操作
-                KeyCode::Char('n') | KeyCode::Char('a') => {
-                    // 新建
+                KeyCode::Char('n') | KeyCode::Char('a') | KeyCode::Char('o') | KeyCode::Char('O') => {
+                    // 新建 (vim风格: o/O也是创建)
                     match app.current_tab {
                         0 => {
                             app.show_dialog = DialogType::CreateTask;
@@ -1792,25 +1792,35 @@ fn render_dialog(f: &mut Frame, app: &App) {
         DialogType::Help => {
             ("快捷键帮助", vec![
                 Line::from(""),
-                Line::from(Span::styled("导航", Style::default().add_modifier(Modifier::BOLD))),
+                Line::from(Span::styled("Vim风格导航", Style::default().add_modifier(Modifier::BOLD))),
                 Line::from("  j/k, ↓/↑  : 上下移动"),
                 Line::from("  h/l, ←/→  : 切换标签页"),
-                Line::from("  g/G       : 跳到首/尾"),
+                Line::from("  gg        : 跳到首行 (双击g)"),
+                Line::from("  G         : 跳到末行"),
+                Line::from("  5j        : 向下移动5行 (数字前缀)"),
+                Line::from("  10G       : 跳到第10行"),
                 Line::from("  1/2/3     : 快速切换标签"),
                 Line::from(""),
                 Line::from(Span::styled("任务操作", Style::default().add_modifier(Modifier::BOLD))),
-                Line::from("  n/a       : 新建"),
+                Line::from("  n/a/o/O   : 新建"),
+                Line::from("  dd        : 删除 (双击d)"),
                 Line::from("  Space/x   : 切换完成状态"),
                 Line::from("  t         : 设置DDL时间"),
-                Line::from("  d         : 删除"),
                 Line::from("  p         : 切换优先级"),
+                Line::from(""),
+                Line::from(Span::styled("命令模式", Style::default().add_modifier(Modifier::BOLD))),
+                Line::from("  :q        : 退出"),
+                Line::from("  :5        : 跳到第5行"),
+                Line::from("  :d        : 删除当前项"),
+                Line::from("  :new text : 创建新项"),
                 Line::from(""),
                 Line::from(Span::styled("番茄钟", Style::default().add_modifier(Modifier::BOLD))),
                 Line::from("  s         : 开始/暂停"),
                 Line::from("  S         : 停止"),
+                Line::from("  +/-       : 调整时长"),
                 Line::from(""),
                 Line::from(Span::styled("其他", Style::default().add_modifier(Modifier::BOLD))),
-                Line::from("  q         : 退出"),
+                Line::from("  Esc       : 清除vim状态"),
                 Line::from("  ?         : 显示此帮助"),
                 Line::from(""),
                 Line::from("按任意键关闭"),
