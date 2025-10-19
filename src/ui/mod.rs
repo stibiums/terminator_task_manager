@@ -1870,7 +1870,7 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
             let message = if let Some(ref msg) = app.status_message {
                 msg.clone()
             } else if parts.is_empty() {
-                "Tab:切换标签 | gg/G:首尾 | 5j:向下5行 | dd:删除 | n:新建 | ?:帮助 | :q退出".to_string()
+                "j/k:导航 | n:新建 | d:删除 | Space:完成 | ?:帮助 | :q:退出".to_string()
             } else {
                 parts.join(" ")
             };
@@ -1991,38 +1991,33 @@ fn render_dialog(f: &mut Frame, app: &App) {
         DialogType::Help => {
             ("快捷键帮助", vec![
                 Line::from(""),
-                Line::from(Span::styled("Vim风格导航", Style::default().add_modifier(Modifier::BOLD))),
-                Line::from("  j/k, ↓/↑  : 上下移动"),
-                Line::from("  h/l, ←/→  : 切换标签页"),
-                Line::from("  gg        : 跳到首行 (双击g)"),
-                Line::from("  G         : 跳到末行"),
-                Line::from("  5j        : 向下移动5行 (数字前缀)"),
-                Line::from("  10G       : 跳到第10行"),
-                Line::from("  1/2/3     : 快速切换标签"),
+                Line::from(Span::styled("━━━ 导航 ━━━", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))),
+                Line::from("  j/k / ↓/↑     上下移动"),
+                Line::from("  h/l / Tab     切换标签"),
+                Line::from("  gg / G        首行/末行"),
+                Line::from("  5j / 10G      数字前缀跳转"),
+                Line::from("  1/2/3         标签1/2/3"),
                 Line::from(""),
-                Line::from(Span::styled("任务操作", Style::default().add_modifier(Modifier::BOLD))),
-                Line::from("  n/a/o/O   : 新建"),
-                Line::from("  dd        : 删除 (双击d)"),
-                Line::from("  Space/x   : 切换完成状态"),
-                Line::from("  t         : 设置DDL时间"),
-                Line::from("  p         : 切换优先级"),
+                Line::from(Span::styled("━━━ 编辑 ━━━", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))),
+                Line::from("  n             新建"),
+                Line::from("  dd            删除 (双击d)"),
+                Line::from("  Space         切换完成"),
+                Line::from("  t             设置DDL"),
+                Line::from("  p             切换优先级"),
                 Line::from(""),
-                Line::from(Span::styled("命令模式", Style::default().add_modifier(Modifier::BOLD))),
-                Line::from("  :q        : 退出"),
-                Line::from("  :5        : 跳到第5行"),
-                Line::from("  :d        : 删除当前项"),
-                Line::from("  :new text : 创建新项"),
+                Line::from(Span::styled("━━━ 命令 ━━━", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+                Line::from("  :q / :wq      退出"),
+                Line::from("  :5            跳转第5行"),
+                Line::from("  :new 标题     创建新项"),
                 Line::from(""),
-                Line::from(Span::styled("番茄钟", Style::default().add_modifier(Modifier::BOLD))),
-                Line::from("  s         : 开始/暂停"),
-                Line::from("  S         : 停止"),
-                Line::from("  +/-       : 调整时长"),
+                Line::from(Span::styled("━━━ 番茄钟 ━━━", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))),
+                Line::from("  s             开始/暂停"),
+                Line::from("  S / c         停止/取消"),
+                Line::from("  +/- [ ]       调整时长 (仅空闲时)"),
                 Line::from(""),
-                Line::from(Span::styled("其他", Style::default().add_modifier(Modifier::BOLD))),
-                Line::from("  Esc       : 清除vim状态"),
-                Line::from("  ?         : 显示此帮助"),
+                Line::from(Span::styled("Esc 清除状态 | ? 帮助", Style::default().fg(Color::Gray))),
                 Line::from(""),
-                Line::from("按任意键关闭"),
+                Line::from(Span::styled("按任意键关闭", Style::default().fg(Color::DarkGray))),
             ])
         }
         DialogType::SetDeadline => {
