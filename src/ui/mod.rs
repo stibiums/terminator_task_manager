@@ -42,6 +42,7 @@ pub struct App {
     pub input_title: String,
     pub show_dialog: DialogType,
     pub status_message: Option<String>,
+    pub note_edit_field: usize, // 0=标题, 1=内容
     // 日期时间选择器状态
     pub datetime_picker_field: usize, // 0=年, 1=月, 2=日, 3=时, 4=分
     pub datetime_year: i32,
@@ -106,6 +107,7 @@ impl Default for App {
             input_title: String::new(),
             show_dialog: DialogType::None,
             status_message: None,
+            note_edit_field: 0,
             datetime_picker_field: 0,
             datetime_year: now.year(),
             datetime_month: now.month(),
@@ -473,17 +475,14 @@ impl App {
         if let Some(note) = self.selected_note().cloned() {
             self.input_title = note.title.clone();
             self.input_buffer = note.content.clone();
+            self.note_edit_field = 0; // 从标题开始
             self.show_dialog = DialogType::EditNote;
-            self.input_mode = InputMode::Insert;
+            self.input_mode = InputMode::Normal; // 先进Normal模式，让用户选择编辑哪个字段
         }
     }
 
     /// 保存编辑后的便签
     pub fn save_edit_note(&mut self) -> Result<()> {
-        if self.input_buffer.is_empty() {
-            return Ok(());
-        }
-
         if let Some(mut note) = self.selected_note().cloned() {
             note.title = self.input_title.clone();
             note.content = self.input_buffer.clone();
@@ -496,6 +495,7 @@ impl App {
             self.input_title.clear();
             self.show_dialog = DialogType::None;
             self.input_mode = InputMode::Normal;
+            self.note_edit_field = 0;
             self.reload_data()?;
             self.set_status_message(format!("便签 #{} 已更新", note.id.unwrap_or(0)));
         }
@@ -963,14 +963,159 @@ fn execute_command(app: &mut App) -> Result<()> {
             }
         }
 
+        // 切换优先级命令
+        "p" | "priority" => {
+            if app.current_tab == 0 {
+                app.cycle_priority()?;
+            } else {
+                app.set_status_message("只有任务才有优先级".to_string());
+            }
+        }
+
+        // 切换完成状态命令
+        "t" | "toggle" => {
+            if app.current_tab == 0 {
+                app.toggle_task_status()?;
+            } else {
+                app.set_status_message("只有任务才能切换完成状态".to_string());
+            }
+        }
+
+        // 设置DDL命令
+        "ddl" | "deadline" | "due" => {
+            if app.current_tab == 0 && !app.tasks.is_empty() {
+                app.init_datetime_picker();
+                app.show_dialog = DialogType::SetDeadline;
+            } else {
+                app.set_status_message("没有可设置DDL的任务".to_string());
+            }
+        }
+
+        // 番茄钟开始/暂停命令
+        "s" | "start" => {
+            if app.current_tab != 2 {
+                app.set_status_message("请先切换到番茄钟标签页 (Tab 3)".to_string());
+            } else {
+                match app.pomodoro.state {
+                    crate::pomodoro::PomodoroState::Idle => {
+                        app.pomodoro.start_work(None);
+                        app.set_status_message("番茄钟开始！".to_string());
+                    }
+                    crate::pomodoro::PomodoroState::Working
+                    | crate::pomodoro::PomodoroState::Break => {
+                        app.pomodoro.pause();
+                        app.set_status_message("已暂停".to_string());
+                    }
+                    crate::pomodoro::PomodoroState::Paused => {
+                        app.pomodoro.resume();
+                        app.set_status_message("继续计时".to_string());
+                    }
+                }
+            }
+        }
+
+        // 番茄钟取消命令
+        "c" | "cancel" | "stop" => {
+            if app.current_tab != 2 {
+                app.set_status_message("请先切换到番茄钟标签页 (Tab 3)".to_string());
+            } else {
+                if app.pomodoro.state != crate::pomodoro::PomodoroState::Idle {
+                    app.pomodoro.stop();
+                    app.set_status_message("番茄钟已取消".to_string());
+                } else {
+                    app.set_status_message("番茄钟未运行".to_string());
+                }
+            }
+        }
+
+        // 调整工作时长命令
+        "work+" | "w+" => {
+            if app.current_tab != 2 {
+                app.set_status_message("请先切换到番茄钟标签页".to_string());
+            } else if app.pomodoro.state != crate::pomodoro::PomodoroState::Idle {
+                app.set_status_message("番茄钟运行中，无法调整！先用:c取消".to_string());
+            } else {
+                app.pomodoro.work_duration += 5;
+                if app.pomodoro.work_duration > 120 {
+                    app.pomodoro.work_duration = 120;
+                }
+                if let Ok(db) = Database::open(&app.db_path) {
+                    let _ = db.save_pomodoro_config(app.pomodoro.work_duration, app.pomodoro.break_duration);
+                }
+                app.set_status_message(format!("工作时长: {}分钟", app.pomodoro.work_duration));
+            }
+        }
+        "work-" | "w-" => {
+            if app.current_tab != 2 {
+                app.set_status_message("请先切换到番茄钟标签页".to_string());
+            } else if app.pomodoro.state != crate::pomodoro::PomodoroState::Idle {
+                app.set_status_message("番茄钟运行中，无法调整！先用:c取消".to_string());
+            } else {
+                if app.pomodoro.work_duration > 5 {
+                    app.pomodoro.work_duration -= 5;
+                    if let Ok(db) = Database::open(&app.db_path) {
+                        let _ = db.save_pomodoro_config(app.pomodoro.work_duration, app.pomodoro.break_duration);
+                    }
+                    app.set_status_message(format!("工作时长: {}分钟", app.pomodoro.work_duration));
+                } else {
+                    app.set_status_message("工作时长最小为5分钟".to_string());
+                }
+            }
+        }
+
+        // 调整休息时长命令
+        "break+" | "b+" => {
+            if app.current_tab != 2 {
+                app.set_status_message("请先切换到番茄钟标签页".to_string());
+            } else if app.pomodoro.state != crate::pomodoro::PomodoroState::Idle {
+                app.set_status_message("番茄钟运行中，无法调整！先用:c取消".to_string());
+            } else {
+                app.pomodoro.break_duration += 1;
+                if app.pomodoro.break_duration > 60 {
+                    app.pomodoro.break_duration = 60;
+                }
+                if let Ok(db) = Database::open(&app.db_path) {
+                    let _ = db.save_pomodoro_config(app.pomodoro.work_duration, app.pomodoro.break_duration);
+                }
+                app.set_status_message(format!("休息时长: {}分钟", app.pomodoro.break_duration));
+            }
+        }
+        "break-" | "b-" => {
+            if app.current_tab != 2 {
+                app.set_status_message("请先切换到番茄钟标签页".to_string());
+            } else if app.pomodoro.state != crate::pomodoro::PomodoroState::Idle {
+                app.set_status_message("番茄钟运行中，无法调整！先用:c取消".to_string());
+            } else {
+                if app.pomodoro.break_duration > 1 {
+                    app.pomodoro.break_duration -= 1;
+                    if let Ok(db) = Database::open(&app.db_path) {
+                        let _ = db.save_pomodoro_config(app.pomodoro.work_duration, app.pomodoro.break_duration);
+                    }
+                    app.set_status_message(format!("休息时长: {}分钟", app.pomodoro.break_duration));
+                } else {
+                    app.set_status_message("休息时长最小为1分钟".to_string());
+                }
+            }
+        }
+
         // 帮助命令
-        "h" | "help" => {
+        "h" | "help" | "?" => {
             app.show_dialog = DialogType::Help;
+        }
+
+        // 排序命令
+        "sort" => {
+            if app.current_tab == 0 {
+                app.sort_tasks();
+                app.set_status_message("已排序任务".to_string());
+            } else {
+                app.set_status_message("只有任务可以排序".to_string());
+            }
         }
 
         // 未知命令
         _ => {
-            app.set_status_message(format!("未知命令: {}", cmd));
+            app.set_status_message(format!("未知命令: {} | 输入:h查看帮助", cmd));
         }
     }
 
@@ -1031,13 +1176,15 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                                 }
                             }
                             DialogType::EditNote => {
-                                // 编辑便签时直接保存
-                                if !app.input_title.is_empty() {
-                                    app.save_edit_note()?;
-                                } else {
-                                    // 第一次Enter：将buffer内容作为标题
+                                // 根据当前编辑的字段保存
+                                if app.note_edit_field == 0 {
+                                    // 保存标题，返回Normal模式
                                     app.input_title = app.input_buffer.clone();
                                     app.input_buffer.clear();
+                                    app.input_mode = InputMode::Normal;
+                                } else {
+                                    // 保存内容并完成编辑
+                                    app.save_edit_note()?;
                                 }
                             }
                             _ => {}
@@ -1068,7 +1215,29 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                     }
                     KeyCode::Char('i') => {
                         if matches!(app.show_dialog, DialogType::CreateTask | DialogType::CreateNote | DialogType::EditTask | DialogType::EditNote) {
+                            // 对于EditNote，先加载对应字段到input_buffer
+                            if app.show_dialog == DialogType::EditNote {
+                                if app.note_edit_field == 0 {
+                                    // 编辑标题
+                                    app.input_buffer = app.input_title.clone();
+                                } else {
+                                    // 编辑内容
+                                    app.input_buffer = app.input_buffer.clone(); // 已经在buffer里了
+                                }
+                            }
                             app.input_mode = InputMode::Insert;
+                        }
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        // 在EditNote对话框中用方向键切换字段
+                        if app.show_dialog == DialogType::EditNote {
+                            app.note_edit_field = 0; // 切换到标题
+                        }
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        // 在EditNote对话框中用方向键切换字段
+                        if app.show_dialog == DialogType::EditNote {
+                            app.note_edit_field = 1; // 切换到内容
                         }
                     }
                     _ => {}
@@ -1260,202 +1429,207 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                     app.last_key = Some(key);
                 }
 
-                // 任务操作
-                KeyCode::Char('n') | KeyCode::Char('a') | KeyCode::Char('o') | KeyCode::Char('O') => {
-                    // 新建 (vim风格: o/O也是创建)
-                    match app.current_tab {
-                        0 => {
-                            app.show_dialog = DialogType::CreateTask;
-                            app.input_mode = InputMode::Insert;
-                            app.input_buffer.clear();
-                        }
-                        1 => {
-                            app.show_dialog = DialogType::CreateNote;
-                            app.input_mode = InputMode::Insert;
-                            app.input_buffer.clear();
-                            app.input_title.clear();
-                        }
-                        _ => {}
-                    }
-                    app.number_prefix.clear();
-                    app.last_key = Some(key);
-                }
-                KeyCode::Char('e') => {
-                    // 编辑当前项
-                    match app.current_tab {
-                        0 => {
-                            if !app.tasks.is_empty() {
-                                app.init_edit_task();
-                            }
-                        }
-                        1 => {
-                            if !app.notes.is_empty() {
-                                app.init_edit_note();
-                            }
-                        }
-                        _ => {}
-                    }
-                    app.number_prefix.clear();
-                    app.last_key = Some(key);
-                }
-                KeyCode::Char(' ') | KeyCode::Char('x') => {
-                    // 切换完成状态
-                    if app.current_tab == 0 {
-                        app.toggle_task_status()?;
-                    }
-                    app.number_prefix.clear();
-                    app.last_key = Some(key);
-                }
-                KeyCode::Char('d') => {
-                    // 删除 (需要确认) - vim风格: dd删除
-                    if app.last_key == Some(KeyCode::Char('d')) {
-                        // dd: 快速删除，直接显示确认对话框
-                        app.show_dialog = DialogType::DeleteConfirm;
-                        app.number_prefix.clear();
-                        app.last_key = None;
-                    } else {
-                        // 第一次按d，等待第二次
-                        app.last_key = Some(key);
-                    }
-                }
-                KeyCode::Char('p') => {
-                    // 切换优先级
-                    if app.current_tab == 0 {
-                        app.cycle_priority()?;
-                    }
-                    app.number_prefix.clear();
-                    app.last_key = Some(key);
-                }
-                KeyCode::Char('t') => {
-                    // 设置DDL时间
-                    if app.current_tab == 0 && !app.tasks.is_empty() {
-                        app.init_datetime_picker();
-                        app.show_dialog = DialogType::SetDeadline;
-                    }
-                    app.number_prefix.clear();
-                    app.last_key = Some(key);
-                }
+                // 任务操作 - 已改为:命令模式
+                // KeyCode::Char('n') | KeyCode::Char('a') | KeyCode::Char('o') | KeyCode::Char('O') => {
+                //     // 新建 (vim风格: o/O也是创建) - 现在使用 :new
+                //     match app.current_tab {
+                //         0 => {
+                //             app.show_dialog = DialogType::CreateTask;
+                //             app.input_mode = InputMode::Insert;
+                //             app.input_buffer.clear();
+                //         }
+                //         1 => {
+                //             app.show_dialog = DialogType::CreateNote;
+                //             app.input_mode = InputMode::Insert;
+                //             app.input_buffer.clear();
+                //             app.input_title.clear();
+                //         }
+                //         _ => {}
+                //     }
+                //     app.number_prefix.clear();
+                //     app.last_key = Some(key);
+                // }
+                // KeyCode::Char('e') => {
+                //     // 编辑当前项 - 现在使用 :e 或 :edit
+                //     match app.current_tab {
+                //         0 => {
+                //             if !app.tasks.is_empty() {
+                //                 app.init_edit_task();
+                //             }
+                //         }
+                //         1 => {
+                //             if !app.notes.is_empty() {
+                //                 app.init_edit_note();
+                //             }
+                //         }
+                //         _ => {}
+                //     }
+                //     app.number_prefix.clear();
+                //     app.last_key = Some(key);
+                // }
+                // KeyCode::Char(' ') | KeyCode::Char('x') => {
+                //     // 切换完成状态 - 现在使用 :t 或 :toggle
+                //     if app.current_tab == 0 {
+                //         app.toggle_task_status()?;
+                //     }
+                //     app.number_prefix.clear();
+                //     app.last_key = Some(key);
+                // }
+                // KeyCode::Char('d') => {
+                //     // 删除 (需要确认) - 现在使用 :d 或 :delete
+                //     if app.last_key == Some(KeyCode::Char('d')) {
+                //         // dd: 快速删除，直接显示确认对话框
+                //         app.show_dialog = DialogType::DeleteConfirm;
+                //         app.number_prefix.clear();
+                //         app.last_key = None;
+                //     } else {
+                //         // 第一次按d，等待第二次
+                //         app.last_key = Some(key);
+                //     }
+                // }
+                // KeyCode::Char('p') => {
+                //     // 切换优先级 - 现在使用 :p 或 :priority
+                //     if app.current_tab == 0 {
+                //         app.cycle_priority()?;
+                //     }
+                //     app.number_prefix.clear();
+                //     app.last_key = Some(key);
+                // }
+                // KeyCode::Char('t') => {
+                //     // 设置DDL时间 - 现在使用 :ddl 或 :deadline
+                //     if app.current_tab == 0 && !app.tasks.is_empty() {
+                //         app.init_datetime_picker();
+                //         app.show_dialog = DialogType::SetDeadline;
+                //     }
+                //     app.number_prefix.clear();
+                //     app.last_key = Some(key);
+                // }
 
-                // 番茄钟操作 (仅在番茄钟标签页有效)
-                KeyCode::Char('s') => {
-                    if app.current_tab == 2 {
-                        match app.pomodoro.state {
-                            crate::pomodoro::PomodoroState::Idle => {
-                                app.pomodoro.start_work(None);
-                                app.set_status_message("番茄钟开始！".to_string());
-                            }
-                            crate::pomodoro::PomodoroState::Working
-                            | crate::pomodoro::PomodoroState::Break => {
-                                app.pomodoro.pause();
-                                app.set_status_message("已暂停".to_string());
-                            }
-                            crate::pomodoro::PomodoroState::Paused => {
-                                app.pomodoro.resume();
-                                app.set_status_message("继续计时".to_string());
-                            }
-                        }
-                    }
-                    app.number_prefix.clear();
-                    app.last_key = Some(key);
-                }
-                KeyCode::Char('S') | KeyCode::Char('c') => {
-                    // 停止/取消番茄钟 (S 或 c 键)
-                    if app.current_tab == 2 {
-                        // 只有在计时器运行或暂停时才需要停止
-                        if app.pomodoro.state != crate::pomodoro::PomodoroState::Idle {
-                            app.pomodoro.stop();
-                            app.set_status_message("番茄钟已取消".to_string());
-                        }
-                    }
-                    app.number_prefix.clear();
-                    app.last_key = Some(key);
-                }
-                // 番茄钟自定义时长 (仅在空闲状态下可调整)
-                KeyCode::Char('+') | KeyCode::Char('=') => {
-                    if app.current_tab == 2 {
-                        if app.pomodoro.state == crate::pomodoro::PomodoroState::Idle {
-                            app.pomodoro.work_duration += 5;
-                            if app.pomodoro.work_duration > 120 {
-                                app.pomodoro.work_duration = 120; // 最大120分钟
-                            }
-                            // 保存配置到数据库
-                            if let Ok(db) = Database::open(&app.db_path) {
-                                let _ = db.save_pomodoro_config(app.pomodoro.work_duration, app.pomodoro.break_duration);
-                            }
-                            app.set_status_message(format!("工作时长: {}分钟 (已保存)", app.pomodoro.work_duration));
-                        } else {
-                            app.set_status_message("番茄钟运行中，无法调整时长！按S或c取消后再调整".to_string());
-                        }
-                    }
-                    app.number_prefix.clear();
-                    app.last_key = Some(key);
-                }
-                KeyCode::Char('-') | KeyCode::Char('_') => {
-                    if app.current_tab == 2 {
-                        if app.pomodoro.state == crate::pomodoro::PomodoroState::Idle {
-                            if app.pomodoro.work_duration > 5 {
-                                app.pomodoro.work_duration -= 5;
-                                // 保存配置到数据库
-                                if let Ok(db) = Database::open(&app.db_path) {
-                                    let _ = db.save_pomodoro_config(app.pomodoro.work_duration, app.pomodoro.break_duration);
-                                }
-                                app.set_status_message(format!("工作时长: {}分钟 (已保存)", app.pomodoro.work_duration));
-                            } else {
-                                app.set_status_message("工作时长最小为5分钟".to_string());
-                            }
-                        } else {
-                            app.set_status_message("番茄钟运行中，无法调整时长！按S或c取消后再调整".to_string());
-                        }
-                    }
-                    app.number_prefix.clear();
-                    app.last_key = Some(key);
-                }
-                KeyCode::Char('[') => {
-                    if app.current_tab == 2 {
-                        if app.pomodoro.state == crate::pomodoro::PomodoroState::Idle {
-                            app.pomodoro.break_duration += 1;
-                            if app.pomodoro.break_duration > 60 {
-                                app.pomodoro.break_duration = 60; // 最大60分钟
-                            }
-                            // 保存配置到数据库
-                            if let Ok(db) = Database::open(&app.db_path) {
-                                let _ = db.save_pomodoro_config(app.pomodoro.work_duration, app.pomodoro.break_duration);
-                            }
-                            app.set_status_message(format!("休息时长: {}分钟 (已保存)", app.pomodoro.break_duration));
-                        } else {
-                            app.set_status_message("番茄钟运行中，无法调整时长！按S或c取消后再调整".to_string());
-                        }
-                    }
-                    app.number_prefix.clear();
-                    app.last_key = Some(key);
-                }
-                KeyCode::Char(']') => {
-                    if app.current_tab == 2 {
-                        if app.pomodoro.state == crate::pomodoro::PomodoroState::Idle {
-                            if app.pomodoro.break_duration > 1 {
-                                app.pomodoro.break_duration -= 1;
-                                // 保存配置到数据库
-                                if let Ok(db) = Database::open(&app.db_path) {
-                                    let _ = db.save_pomodoro_config(app.pomodoro.work_duration, app.pomodoro.break_duration);
-                                }
-                                app.set_status_message(format!("休息时长: {}分钟 (已保存)", app.pomodoro.break_duration));
-                            } else {
-                                app.set_status_message("休息时长最小为1分钟".to_string());
-                            }
-                        } else {
-                            app.set_status_message("番茄钟运行中，无法调整时长！按S或c取消后再调整".to_string());
-                        }
-                    }
-                    app.number_prefix.clear();
-                    app.last_key = Some(key);
-                }
+                // 番茄钟操作 - 已改为:命令模式
+                // KeyCode::Char('s') => {
+                //     // 开始/暂停番茄钟 - 现在使用 :s 或 :start
+                //     if app.current_tab == 2 {
+                //         match app.pomodoro.state {
+                //             crate::pomodoro::PomodoroState::Idle => {
+                //                 app.pomodoro.start_work(None);
+                //                 app.set_status_message("番茄钟开始！".to_string());
+                //             }
+                //             crate::pomodoro::PomodoroState::Working
+                //             | crate::pomodoro::PomodoroState::Break => {
+                //                 app.pomodoro.pause();
+                //                 app.set_status_message("已暂停".to_string());
+                //             }
+                //             crate::pomodoro::PomodoroState::Paused => {
+                //                 app.pomodoro.resume();
+                //                 app.set_status_message("继续计时".to_string());
+                //             }
+                //         }
+                //     }
+                //     app.number_prefix.clear();
+                //     app.last_key = Some(key);
+                // }
+                // KeyCode::Char('S') | KeyCode::Char('c') => {
+                //     // 停止/取消番茄钟 - 现在使用 :c 或 :cancel
+                //     if app.current_tab == 2 {
+                //         // 只有在计时器运行或暂停时才需要停止
+                //         if app.pomodoro.state != crate::pomodoro::PomodoroState::Idle {
+                //             app.pomodoro.stop();
+                //             app.set_status_message("番茄钟已取消".to_string());
+                //         }
+                //     }
+                //     app.number_prefix.clear();
+                //     app.last_key = Some(key);
+                // }
+                // 番茄钟自定义时长 - 已改为:命令模式
+                // KeyCode::Char('+') | KeyCode::Char('=') => {
+                //     // 增加工作时长 - 现在使用 :work+ 或 :w+
+                //     if app.current_tab == 2 {
+                //         if app.pomodoro.state == crate::pomodoro::PomodoroState::Idle {
+                //             app.pomodoro.work_duration += 5;
+                //             if app.pomodoro.work_duration > 120 {
+                //                 app.pomodoro.work_duration = 120; // 最大120分钟
+                //             }
+                //             // 保存配置到数据库
+                //             if let Ok(db) = Database::open(&app.db_path) {
+                //                 let _ = db.save_pomodoro_config(app.pomodoro.work_duration, app.pomodoro.break_duration);
+                //             }
+                //             app.set_status_message(format!("工作时长: {}分钟 (已保存)", app.pomodoro.work_duration));
+                //         } else {
+                //             app.set_status_message("番茄钟运行中，无法调整时长！按:c取消后再调整".to_string());
+                //         }
+                //     }
+                //     app.number_prefix.clear();
+                //     app.last_key = Some(key);
+                // }
+                // KeyCode::Char('-') | KeyCode::Char('_') => {
+                //     // 减少工作时长 - 现在使用 :work- 或 :w-
+                //     if app.current_tab == 2 {
+                //         if app.pomodoro.state == crate::pomodoro::PomodoroState::Idle {
+                //             if app.pomodoro.work_duration > 5 {
+                //                 app.pomodoro.work_duration -= 5;
+                //                 // 保存配置到数据库
+                //                 if let Ok(db) = Database::open(&app.db_path) {
+                //                     let _ = db.save_pomodoro_config(app.pomodoro.work_duration, app.pomodoro.break_duration);
+                //                 }
+                //                 app.set_status_message(format!("工作时长: {}分钟 (已保存)", app.pomodoro.work_duration));
+                //             } else {
+                //                 app.set_status_message("工作时长最小为5分钟".to_string());
+                //             }
+                //         } else {
+                //             app.set_status_message("番茄钟运行中，无法调整时长！按:c取消后再调整".to_string());
+                //         }
+                //     }
+                //     app.number_prefix.clear();
+                //     app.last_key = Some(key);
+                // }
+                // KeyCode::Char('[') => {
+                //     // 增加休息时长 - 现在使用 :break+ 或 :b+
+                //     if app.current_tab == 2 {
+                //         if app.pomodoro.state == crate::pomodoro::PomodoroState::Idle {
+                //             app.pomodoro.break_duration += 1;
+                //             if app.pomodoro.break_duration > 60 {
+                //                 app.pomodoro.break_duration = 60; // 最大60分钟
+                //             }
+                //             // 保存配置到数据库
+                //             if let Ok(db) = Database::open(&app.db_path) {
+                //                 let _ = db.save_pomodoro_config(app.pomodoro.work_duration, app.pomodoro.break_duration);
+                //             }
+                //             app.set_status_message(format!("休息时长: {}分钟 (已保存)", app.pomodoro.break_duration));
+                //         } else {
+                //             app.set_status_message("番茄钟运行中，无法调整时长！按:c取消后再调整".to_string());
+                //         }
+                //     }
+                //     app.number_prefix.clear();
+                //     app.last_key = Some(key);
+                // }
+                // KeyCode::Char(']') => {
+                //     // 减少休息时长 - 现在使用 :break- 或 :b-
+                //     if app.current_tab == 2 {
+                //         if app.pomodoro.state == crate::pomodoro::PomodoroState::Idle {
+                //             if app.pomodoro.break_duration > 1 {
+                //                 app.pomodoro.break_duration -= 1;
+                //                 // 保存配置到数据库
+                //                 if let Ok(db) = Database::open(&app.db_path) {
+                //                     let _ = db.save_pomodoro_config(app.pomodoro.work_duration, app.pomodoro.break_duration);
+                //                 }
+                //                 app.set_status_message(format!("休息时长: {}分钟 (已保存)", app.pomodoro.break_duration));
+                //             } else {
+                //                 app.set_status_message("休息时长最小为1分钟".to_string());
+                //             }
+                //         } else {
+                //             app.set_status_message("番茄钟运行中，无法调整时长！按:c取消后再调整".to_string());
+                //         }
+                //     }
+                //     app.number_prefix.clear();
+                //     app.last_key = Some(key);
+                // }
 
-                // 帮助
-                KeyCode::Char('?') => {
-                    app.show_dialog = DialogType::Help;
-                    app.number_prefix.clear();
-                    app.last_key = Some(key);
-                }
+                // // 帮助 - 现在使用 :h 或 :help
+                // KeyCode::Char('?') => {
+                //     app.show_dialog = DialogType::Help;
+                //     app.number_prefix.clear();
+                //     app.last_key = Some(key);
+                // }
 
                 // Escape键: 清除vim状态
                 KeyCode::Esc => {
@@ -1464,10 +1638,10 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                     app.status_message = None;
                 }
 
-                // q键: 退出
-                KeyCode::Char('q') => {
-                    app.should_quit = true;
-                }
+                // // q键: 退出 - 现在使用 :q
+                // KeyCode::Char('q') => {
+                //     app.should_quit = true;
+                // }
 
                 _ => {
                     // 其他未处理的键: 清除vim状态
@@ -1612,8 +1786,17 @@ fn ui(f: &mut Frame, app: &mut App) {
 
     // 标签页
     let titles = vec!["📝 Tasks (1)", "📓 Notes (2)", "🍅 Pomodoro (3)"];
+    let tab_hint = Span::styled(
+        " Tab/h/l切换 | 1/2/3快速跳转 | :h帮助 ",
+        Style::default().fg(Color::DarkGray)
+    );
     let tabs = Tabs::new(titles)
-        .block(Block::default().borders(Borders::ALL).title("Task Manager"))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(Span::styled("Task Manager", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)))
+                .title_bottom(tab_hint)
+        )
         .select(app.current_tab)
         .style(Style::default().fg(Color::White))
         .highlight_style(
@@ -1697,9 +1880,9 @@ fn render_tasks(f: &mut Frame, app: &mut App, area: Rect) {
         .collect();
 
     let help_text = if app.tasks.is_empty() {
-        "按 'n' 创建新任务 | '?' 显示帮助"
+        "按 :n 创建新任务 | :h 显示帮助"
     } else {
-        "j/k:导航 | Space:切换状态 | t:设置DDL | p:优先级 | n:新建 | d:删除 | ?:帮助"
+        "j/k:导航 | Tab:切换 | ::命令 | :n新建 | :e编辑 | :d删除 | :t切换状态 | :p优先级 | :h帮助 | :q退出"
     };
 
     let list = List::new(items)
@@ -1856,7 +2039,7 @@ fn render_notes(f: &mut Frame, app: &mut App, area: Rect) {
         height: 1,
     };
 
-    let help_text = "j/k:导航 | n:新建 | d:删除 | ?:帮助";
+    let help_text = "j/k:导航 | Tab:切换 | ::命令模式 | :n新建 | :e编辑 | :d删除 | :h帮助 | :q退出";
     let help = Paragraph::new(help_text)
         .style(Style::default().bg(Color::DarkGray).fg(Color::White));
 
@@ -1981,7 +2164,7 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
             let message = if let Some(ref msg) = app.status_message {
                 msg.clone()
             } else if parts.is_empty() {
-                "j/k:导航 | n:新建 | d:删除 | Space:完成 | ?:帮助 | :q:退出".to_string()
+                "j/k/h/l:导航 | Tab:切换标签 | ::命令 | :n新建 | :e编辑 | :d删除 | :t切换 | :h帮助 | :q退出".to_string()
             } else {
                 parts.join(" ")
             };
@@ -2092,61 +2275,51 @@ fn render_dialog(f: &mut Frame, app: &App) {
             ])
         }
         DialogType::EditNote => {
-            let (current_field, instructions) = if app.input_title.is_empty() {
-                ("标题", "输入标题后按 Enter 继续")
-            } else {
-                ("内容", "输入内容后按 Enter 保存")
+            let mode_hint = match app.input_mode {
+                InputMode::Normal => "方向键选择字段 | i:编辑 | Esc:取消",
+                InputMode::Insert => "Enter:保存字段 | Esc:返回选择",
+                _ => "",
             };
 
             ("编辑便签", vec![
                 Line::from(""),
                 Line::from(vec![
-                    Span::styled("步骤1: ", Style::default().fg(Color::Gray)),
+                    Span::styled("标题: ", Style::default().fg(Color::Gray)),
                     Span::styled(
-                        "编辑标题",
-                        if app.input_title.is_empty() {
-                            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default().fg(Color::Green)
-                        }
+                        if app.note_edit_field == 0 { "[选中]" } else { "" },
+                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
                     ),
                 ]),
                 Line::from(Span::styled(
-                    if app.input_title.is_empty() {
-                        &app.input_buffer
+                    &app.input_title,
+                    if app.note_edit_field == 0 && app.input_mode == InputMode::Insert {
+                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                    } else if app.note_edit_field == 0 {
+                        Style::default().fg(Color::Yellow)
                     } else {
-                        &app.input_title
-                    },
-                    Style::default().fg(Color::Yellow),
+                        Style::default().fg(Color::Gray)
+                    }
                 )),
                 Line::from(""),
                 Line::from(vec![
-                    Span::styled("步骤2: ", Style::default().fg(Color::Gray)),
+                    Span::styled("内容: ", Style::default().fg(Color::Gray)),
                     Span::styled(
-                        "编辑内容",
-                        if !app.input_title.is_empty() {
-                            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default().fg(Color::DarkGray)
-                        }
+                        if app.note_edit_field == 1 { "[选中]" } else { "" },
+                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
                     ),
                 ]),
                 Line::from(Span::styled(
-                    if !app.input_title.is_empty() {
-                        &app.input_buffer
+                    &app.input_buffer,
+                    if app.note_edit_field == 1 && app.input_mode == InputMode::Insert {
+                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                    } else if app.note_edit_field == 1 {
+                        Style::default().fg(Color::Cyan)
                     } else {
-                        ""
-                    },
-                    Style::default().fg(Color::Cyan),
+                        Style::default().fg(Color::Gray)
+                    }
                 )),
                 Line::from(""),
-                Line::from(vec![
-                    Span::raw("当前: "),
-                    Span::styled(current_field, Style::default().fg(Color::Green)),
-                ]),
-                Line::from(""),
-                Line::from(instructions),
-                Line::from("Esc: 取消"),
+                Line::from(Span::styled(mode_hint, Style::default().fg(Color::Green))),
             ])
         }
         DialogType::DeleteConfirm => {
@@ -2173,32 +2346,34 @@ fn render_dialog(f: &mut Frame, app: &App) {
         DialogType::Help => {
             ("快捷键帮助", vec![
                 Line::from(""),
-                Line::from(Span::styled("━━━ 导航 ━━━", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))),
+                Line::from(Span::styled("━━━ 导航 (无需:前缀) ━━━", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))),
                 Line::from("  j/k / ↓/↑     上下移动"),
                 Line::from("  h/l / Tab     切换标签"),
                 Line::from("  gg / G        首行/末行"),
                 Line::from("  5j / 10G      数字前缀跳转"),
                 Line::from("  1/2/3         标签1/2/3"),
                 Line::from(""),
-                Line::from(Span::styled("━━━ 编辑 ━━━", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))),
-                Line::from("  n             新建"),
-                Line::from("  e             编辑"),
-                Line::from("  dd            删除 (双击d)"),
-                Line::from("  Space         切换完成"),
-                Line::from("  t             设置DDL"),
-                Line::from("  p             切换优先级"),
-                Line::from(""),
-                Line::from(Span::styled("━━━ 命令 ━━━", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+                Line::from(Span::styled("━━━ 命令 (需要:前缀) ━━━", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+                Line::from("  :n / :new     新建任务/便签"),
+                Line::from("  :e / :edit    编辑当前项"),
+                Line::from("  :d / :delete  删除当前项"),
+                Line::from("  :t / :toggle  切换完成状态"),
+                Line::from("  :p / :priority 切换优先级"),
+                Line::from("  :ddl / :deadline 设置DDL"),
+                Line::from("  :sort         排序任务"),
                 Line::from("  :q / :wq      退出"),
                 Line::from("  :5            跳转第5行"),
-                Line::from("  :new 标题     创建新项"),
                 Line::from(""),
-                Line::from(Span::styled("━━━ 番茄钟 ━━━", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))),
-                Line::from("  s             开始/暂停"),
-                Line::from("  S / c         停止/取消"),
-                Line::from("  +/- [ ]       调整时长 (仅空闲时)"),
+                Line::from(Span::styled("━━━ 番茄钟命令 ━━━", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))),
+                Line::from("  :s / :start   开始/暂停"),
+                Line::from("  :c / :cancel  停止/取消"),
+                Line::from("  :work+ / :w+  增加工作时长(+5分钟)"),
+                Line::from("  :work- / :w-  减少工作时长(-5分钟)"),
+                Line::from("  :break+ / :b+ 增加休息时长(+1分钟)"),
+                Line::from("  :break- / :b- 减少休息时长(-1分钟)"),
+                Line::from("  :pomo w=25 b=5 设置番茄钟时长"),
                 Line::from(""),
-                Line::from(Span::styled("Esc 清除状态 | ? 帮助", Style::default().fg(Color::Gray))),
+                Line::from(Span::styled("提示: 除了hjkl导航键和Tab外，所有功能都需要用:命令", Style::default().fg(Color::Gray))),
                 Line::from(""),
                 Line::from(Span::styled("按任意键关闭", Style::default().fg(Color::DarkGray))),
             ])
