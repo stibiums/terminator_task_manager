@@ -402,6 +402,38 @@ impl App {
         Ok(())
     }
 
+    /// 初始化编辑任务（加载当前任务内容到输入框）
+    pub fn init_edit_task(&mut self) {
+        if let Some(task) = self.selected_task().cloned() {
+            self.input_buffer = task.title.clone();
+            self.show_dialog = DialogType::EditTask;
+            self.input_mode = InputMode::Insert;
+        }
+    }
+
+    /// 保存编辑后的任务
+    pub fn save_edit_task(&mut self) -> Result<()> {
+        if self.input_buffer.is_empty() {
+            return Ok(());
+        }
+
+        if let Some(mut task) = self.selected_task().cloned() {
+            task.title = self.input_buffer.clone();
+            task.updated_at = chrono::Utc::now();
+
+            let db = Database::open(&self.db_path)?;
+            db.update_task(&task)?;
+
+            self.input_buffer.clear();
+            self.show_dialog = DialogType::None;
+            self.input_mode = InputMode::Normal;
+            self.reload_data()?;
+            self.set_status_message(format!("任务 #{} 已更新", task.id.unwrap_or(0)));
+        }
+
+        Ok(())
+    }
+
     /// 删除任务
     pub fn delete_task(&mut self) -> Result<()> {
         if let Some(task) = self.selected_task() {
@@ -432,6 +464,41 @@ impl App {
         self.input_mode = InputMode::Normal;
         self.reload_data()?;
         self.set_status_message(format!("便签 #{} 已创建", id));
+
+        Ok(())
+    }
+
+    /// 初始化编辑便签（加载当前便签内容到输入框）
+    pub fn init_edit_note(&mut self) {
+        if let Some(note) = self.selected_note().cloned() {
+            self.input_title = note.title.clone();
+            self.input_buffer = note.content.clone();
+            self.show_dialog = DialogType::EditNote;
+            self.input_mode = InputMode::Insert;
+        }
+    }
+
+    /// 保存编辑后的便签
+    pub fn save_edit_note(&mut self) -> Result<()> {
+        if self.input_buffer.is_empty() {
+            return Ok(());
+        }
+
+        if let Some(mut note) = self.selected_note().cloned() {
+            note.title = self.input_title.clone();
+            note.content = self.input_buffer.clone();
+            note.updated_at = chrono::Utc::now();
+
+            let db = Database::open(&self.db_path)?;
+            db.update_note(&note)?;
+
+            self.input_buffer.clear();
+            self.input_title.clear();
+            self.show_dialog = DialogType::None;
+            self.input_mode = InputMode::Normal;
+            self.reload_data()?;
+            self.set_status_message(format!("便签 #{} 已更新", note.id.unwrap_or(0)));
+        }
 
         Ok(())
     }
@@ -830,8 +897,23 @@ fn execute_command(app: &mut App) -> Result<()> {
 
         // 编辑命令
         "e" | "edit" => {
-            // TODO: 实现编辑功能
-            app.set_status_message("编辑功能即将推出".to_string());
+            match app.current_tab {
+                0 => {
+                    if !app.tasks.is_empty() {
+                        app.init_edit_task();
+                    } else {
+                        app.set_status_message("没有可编辑的任务".to_string());
+                    }
+                }
+                1 => {
+                    if !app.notes.is_empty() {
+                        app.init_edit_note();
+                    } else {
+                        app.set_status_message("没有可编辑的便签".to_string());
+                    }
+                }
+                _ => {}
+            }
         }
 
         // 番茄钟配置命令
@@ -937,10 +1019,21 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                     KeyCode::Enter => {
                         match app.show_dialog {
                             DialogType::CreateTask => app.create_task()?,
+                            DialogType::EditTask => app.save_edit_task()?,
                             DialogType::CreateNote => {
                                 // Tab键才切换到内容，Enter在有标题后创建
                                 if !app.input_title.is_empty() {
                                     app.create_note()?;
+                                } else {
+                                    // 第一次Enter：将buffer内容作为标题
+                                    app.input_title = app.input_buffer.clone();
+                                    app.input_buffer.clear();
+                                }
+                            }
+                            DialogType::EditNote => {
+                                // 编辑便签时直接保存
+                                if !app.input_title.is_empty() {
+                                    app.save_edit_note()?;
                                 } else {
                                     // 第一次Enter：将buffer内容作为标题
                                     app.input_title = app.input_buffer.clone();
@@ -1181,6 +1274,24 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                             app.input_mode = InputMode::Insert;
                             app.input_buffer.clear();
                             app.input_title.clear();
+                        }
+                        _ => {}
+                    }
+                    app.number_prefix.clear();
+                    app.last_key = Some(key);
+                }
+                KeyCode::Char('e') => {
+                    // 编辑当前项
+                    match app.current_tab {
+                        0 => {
+                            if !app.tasks.is_empty() {
+                                app.init_edit_task();
+                            }
+                        }
+                        1 => {
+                            if !app.notes.is_empty() {
+                                app.init_edit_note();
+                            }
                         }
                         _ => {}
                     }
@@ -1967,6 +2078,77 @@ fn render_dialog(f: &mut Frame, app: &App) {
                 Line::from("Esc: 取消"),
             ])
         }
+        DialogType::EditTask => {
+            ("编辑任务", vec![
+                Line::from(""),
+                Line::from("修改任务标题:"),
+                Line::from(""),
+                Line::from(Span::styled(
+                    &app.input_buffer,
+                    Style::default().fg(Color::Yellow),
+                )),
+                Line::from(""),
+                Line::from("按 Enter 保存, Esc 取消"),
+            ])
+        }
+        DialogType::EditNote => {
+            let (current_field, instructions) = if app.input_title.is_empty() {
+                ("标题", "输入标题后按 Enter 继续")
+            } else {
+                ("内容", "输入内容后按 Enter 保存")
+            };
+
+            ("编辑便签", vec![
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("步骤1: ", Style::default().fg(Color::Gray)),
+                    Span::styled(
+                        "编辑标题",
+                        if app.input_title.is_empty() {
+                            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::Green)
+                        }
+                    ),
+                ]),
+                Line::from(Span::styled(
+                    if app.input_title.is_empty() {
+                        &app.input_buffer
+                    } else {
+                        &app.input_title
+                    },
+                    Style::default().fg(Color::Yellow),
+                )),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("步骤2: ", Style::default().fg(Color::Gray)),
+                    Span::styled(
+                        "编辑内容",
+                        if !app.input_title.is_empty() {
+                            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::DarkGray)
+                        }
+                    ),
+                ]),
+                Line::from(Span::styled(
+                    if !app.input_title.is_empty() {
+                        &app.input_buffer
+                    } else {
+                        ""
+                    },
+                    Style::default().fg(Color::Cyan),
+                )),
+                Line::from(""),
+                Line::from(vec![
+                    Span::raw("当前: "),
+                    Span::styled(current_field, Style::default().fg(Color::Green)),
+                ]),
+                Line::from(""),
+                Line::from(instructions),
+                Line::from("Esc: 取消"),
+            ])
+        }
         DialogType::DeleteConfirm => {
             let item_name = if app.current_tab == 0 {
                 app.selected_task().map(|t| t.title.as_str()).unwrap_or("")
@@ -2000,6 +2182,7 @@ fn render_dialog(f: &mut Frame, app: &App) {
                 Line::from(""),
                 Line::from(Span::styled("━━━ 编辑 ━━━", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))),
                 Line::from("  n             新建"),
+                Line::from("  e             编辑"),
                 Line::from("  dd            删除 (双击d)"),
                 Line::from("  Space         切换完成"),
                 Line::from("  t             设置DDL"),
