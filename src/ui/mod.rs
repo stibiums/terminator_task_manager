@@ -970,39 +970,33 @@ fn execute_command(app: &mut App) -> Result<()> {
         // 切换优先级命令（支持参数：1=Low, 2=Medium, 3=High）
         "p" | "priority" => {
             if app.current_tab == 0 {
-                if parts.len() > 1 {
+                if app.tasks.is_empty() {
+                    app.set_status_message("没有任务可设置优先级".to_string());
+                } else if parts.len() > 1 {
                     // 带参数：设置指定优先级
-                    match parts[1] {
-                        "1" | "low" | "l" => {
-                            if let Some(mut task) = app.selected_task().cloned() {
+                    if let Some(mut task) = app.selected_task().cloned() {
+                        let old_priority = task.priority;
+                        match parts[1] {
+                            "1" | "low" | "l" => {
                                 task.priority = crate::models::Priority::Low;
-                                let db = Database::open(&app.db_path)?;
-                                db.update_task(&task)?;
-                                app.reload_data()?;
-                                app.set_status_message("优先级已设为 Low".to_string());
                             }
-                        }
-                        "2" | "medium" | "m" => {
-                            if let Some(mut task) = app.selected_task().cloned() {
+                            "2" | "medium" | "m" => {
                                 task.priority = crate::models::Priority::Medium;
-                                let db = Database::open(&app.db_path)?;
-                                db.update_task(&task)?;
-                                app.reload_data()?;
-                                app.set_status_message("优先级已设为 Medium".to_string());
                             }
-                        }
-                        "3" | "high" | "h" => {
-                            if let Some(mut task) = app.selected_task().cloned() {
+                            "3" | "high" | "h" => {
                                 task.priority = crate::models::Priority::High;
-                                let db = Database::open(&app.db_path)?;
-                                db.update_task(&task)?;
-                                app.reload_data()?;
-                                app.set_status_message("优先级已设为 High".to_string());
+                            }
+                            _ => {
+                                app.set_status_message("用法: :p [1/low | 2/medium | 3/high]".to_string());
+                                return Ok(());
                             }
                         }
-                        _ => {
-                            app.set_status_message("用法: :p [1/low | 2/medium | 3/high]".to_string());
-                        }
+                        let db = Database::open(&app.db_path)?;
+                        db.update_task(&task)?;
+                        app.reload_data()?;
+                        app.set_status_message(format!("优先级: {:?} → {:?}", old_priority, task.priority));
+                    } else {
+                        app.set_status_message("没有选中的任务".to_string());
                     }
                 } else {
                     // 无参数：循环切换
@@ -2400,43 +2394,101 @@ fn render_dialog(f: &mut Frame, app: &App) {
             ])
         }
         DialogType::Help => {
-            ("快捷键帮助", vec![
-                Line::from(""),
-                Line::from(Span::styled("━━━ 导航 ━━━", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))),
-                Line::from("  j/k / ↓/↑     上下移动"),
-                Line::from("  h/l / ←/→     切换标签"),
-                Line::from("  Tab / 1/2/3   快速切换标签"),
-                Line::from("  gg / G        首行/末行"),
-                Line::from("  5j / 10G      数字前缀跳转"),
-                Line::from(""),
-                Line::from(Span::styled("━━━ 高频操作（单键）━━━", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))),
-                Line::from("  n / a / o     新建任务/便签"),
-                Line::from("  e             编辑当前项"),
-                Line::from("  dd            删除当前项(双击d)"),
-                Line::from("  Space / x     切换完成状态"),
-                Line::from("  p             切换优先级"),
-                Line::from("  t             设置DDL时间"),
-                Line::from("  ?             显示帮助"),
-                Line::from(""),
-                Line::from(Span::styled("━━━ 番茄钟（标签3）━━━", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))),
-                Line::from("  s             开始/暂停"),
-                Line::from("  S / c         停止/取消"),
-                Line::from("  + / -         调整工作时长(±5分)"),
-                Line::from("  [ / ]         调整休息时长(±1分)"),
-                Line::from(""),
-                Line::from(Span::styled("━━━ 命令模式（:前缀）━━━", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
-                Line::from("  :new 标题     直接创建任务/便签"),
-                Line::from("  :p [1/2/3]    设置优先级(可选参数)"),
-                Line::from("  :pomo w=25 b=5 设置番茄钟时长"),
-                Line::from("  :t / :ddl     设置DDL时间"),
-                Line::from("  :sort         排序任务"),
-                Line::from("  :q / :wq / :x 退出程序"),
-                Line::from("  :5            跳转第5行"),
-                Line::from(""),
-                Line::from(Span::styled("提示: 高频操作用单键更快，低频操作用:命令", Style::default().fg(Color::Gray))),
-                Line::from(""),
-                Line::from(Span::styled("按任意键关闭", Style::default().fg(Color::DarkGray))),
-            ])
+            // 根据当前标签页显示不同的帮助内容
+            match app.current_tab {
+                0 => {
+                    // 任务界面帮助
+                    ("任务管理 - 快捷键帮助", vec![
+                        Line::from(""),
+                        Line::from(Span::styled("━━━ 导航 ━━━", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))),
+                        Line::from("  j/k / ↓/↑     上下移动"),
+                        Line::from("  h/l / Tab     切换标签"),
+                        Line::from("  gg / G        首行/末行"),
+                        Line::from("  5j / 10G      数字前缀跳转"),
+                        Line::from(""),
+                        Line::from(Span::styled("━━━ 任务操作 ━━━", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))),
+                        Line::from("  n / a / o     新建任务"),
+                        Line::from("  e             编辑任务"),
+                        Line::from("  dd            删除任务(双击d)"),
+                        Line::from("  Space / x     切换完成状态"),
+                        Line::from("  p             切换优先级"),
+                        Line::from("  t             设置DDL时间"),
+                        Line::from(""),
+                        Line::from(Span::styled("━━━ 命令模式 ━━━", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+                        Line::from("  :new 标题     直接创建任务"),
+                        Line::from("  :p [1/2/3]    设置优先级 (1=Low, 2=Med, 3=High)"),
+                        Line::from("  :t / :ddl     设置DDL"),
+                        Line::from("  :sort         排序任务"),
+                        Line::from("  :q / :wq      退出"),
+                        Line::from("  :5            跳转第5行"),
+                        Line::from(""),
+                        Line::from(Span::styled("按任意键关闭", Style::default().fg(Color::DarkGray))),
+                    ])
+                }
+                1 => {
+                    // 便签界面帮助
+                    ("便签墙 - 快捷键帮助", vec![
+                        Line::from(""),
+                        Line::from(Span::styled("━━━ 导航 ━━━", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))),
+                        Line::from("  j/k / ↓/↑     上下移动"),
+                        Line::from("  h/l / Tab     切换标签"),
+                        Line::from("  gg / G        首行/末行"),
+                        Line::from(""),
+                        Line::from(Span::styled("━━━ 便签操作 ━━━", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))),
+                        Line::from("  n / a / o     新建便签"),
+                        Line::from("  e             编辑便签"),
+                        Line::from("  dd            删除便签(双击d)"),
+                        Line::from(""),
+                        Line::from(Span::styled("━━━ 编辑便签 ━━━", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+                        Line::from("  ↑/↓ 或 k/j    选择编辑字段(标题/内容)"),
+                        Line::from("  i             进入编辑模式"),
+                        Line::from("  Enter         保存当前字段"),
+                        Line::from("  Esc           取消编辑"),
+                        Line::from(""),
+                        Line::from(Span::styled("━━━ 命令模式 ━━━", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+                        Line::from("  :new 内容     直接创建便签"),
+                        Line::from("  :q / :wq      退出"),
+                        Line::from(""),
+                        Line::from(Span::styled("按任意键关闭", Style::default().fg(Color::DarkGray))),
+                    ])
+                }
+                2 => {
+                    // 番茄钟界面帮助
+                    ("番茄钟 - 快捷键帮助", vec![
+                        Line::from(""),
+                        Line::from(Span::styled("━━━ 导航 ━━━", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))),
+                        Line::from("  h/l / Tab     切换标签"),
+                        Line::from("  1/2/3         快速跳转"),
+                        Line::from(""),
+                        Line::from(Span::styled("━━━ 番茄钟控制 ━━━", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))),
+                        Line::from("  s             开始/暂停"),
+                        Line::from("  S / c         停止/取消"),
+                        Line::from(""),
+                        Line::from(Span::styled("━━━ 时长调整（仅空闲时）━━━", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))),
+                        Line::from("  + / -         调整工作时长 (±5分钟)"),
+                        Line::from("  [ / ]         调整休息时长 (±1分钟)"),
+                        Line::from(""),
+                        Line::from(Span::styled("━━━ 命令模式 ━━━", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+                        Line::from("  :s / :start   开始/暂停"),
+                        Line::from("  :c / :cancel  停止/取消"),
+                        Line::from("  :pomo w=25 b=5 设置时长并保存"),
+                        Line::from("  :q / :wq      退出"),
+                        Line::from(""),
+                        Line::from(Span::styled("提示: 工作25分钟 → 休息5分钟为标准番茄钟", Style::default().fg(Color::Gray))),
+                        Line::from(""),
+                        Line::from(Span::styled("按任意键关闭", Style::default().fg(Color::DarkGray))),
+                    ])
+                }
+                _ => {
+                    // 默认帮助（不应该到这里）
+                    ("快捷键帮助", vec![
+                        Line::from(""),
+                        Line::from("按 ? 查看帮助"),
+                        Line::from(""),
+                        Line::from(Span::styled("按任意键关闭", Style::default().fg(Color::DarkGray))),
+                    ])
+                }
+            }
         }
         DialogType::SetDeadline => {
             // 构建日期时间选择器显示
