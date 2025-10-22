@@ -64,8 +64,10 @@ pub struct App {
     pub last_tick_time: std::time::Instant,
     // 提示消息时间戳（用于自动消失）
     pub status_message_time: Option<std::time::Instant>,
-    // 帮助对话框滚动偏移量
+    // 滚动偏移量
     pub help_scroll_offset: usize,
+    pub pomodoro_scroll_offset: usize,
+    pub note_scroll_offset: usize,
 }
 
 /// 输入模式
@@ -131,6 +133,8 @@ impl Default for App {
             last_tick_time: std::time::Instant::now(),
             status_message_time: None,
             help_scroll_offset: 0,
+            pomodoro_scroll_offset: 0,
+            note_scroll_offset: 0,
         }
     }
 }
@@ -1593,6 +1597,10 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                                 app.next_note();
                             }
                         }
+                        2 => {
+                            // 番茄钟界面滚动
+                            app.pomodoro_scroll_offset += count;
+                        }
                         _ => {}
                     }
                     app.number_prefix.clear();
@@ -1615,6 +1623,10 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                             for _ in 0..count {
                                 app.previous_note();
                             }
+                        }
+                        2 => {
+                            // 番茄钟界面向上滚动
+                            app.pomodoro_scroll_offset = app.pomodoro_scroll_offset.saturating_sub(count);
                         }
                         _ => {}
                     }
@@ -1653,6 +1665,7 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                         match app.current_tab {
                             0 => app.goto_first_task(),
                             1 => app.goto_first_note(),
+                            2 => app.pomodoro_scroll_offset = 0, // 番茄钟滚动到顶部
                             _ => {}
                         }
                         app.number_prefix.clear();
@@ -2368,7 +2381,8 @@ fn render_pomodoro(f: &mut Frame, app: &mut App, area: Rect) {
                     Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
                 ))
         )
-        .alignment(Alignment::Center);
+        .alignment(Alignment::Center)
+        .scroll((app.pomodoro_scroll_offset as u16, 0)); // 添加滚动支持
 
     f.render_widget(paragraph, area);
 }
