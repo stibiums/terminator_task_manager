@@ -68,6 +68,7 @@ pub struct App {
     pub help_scroll_offset: usize,
     pub pomodoro_scroll_offset: usize,
     pub note_scroll_offset: usize,
+    pub view_note_scroll_offset: usize, // ViewNote对话框滚动
 }
 
 /// 输入模式
@@ -87,6 +88,7 @@ pub enum DialogType {
     DeleteConfirm,
     CreateNote,
     EditNote,
+    ViewNote,
     Help,
     SetDeadline,
 }
@@ -135,6 +137,7 @@ impl Default for App {
             help_scroll_offset: 0,
             pomodoro_scroll_offset: 0,
             note_scroll_offset: 0,
+            view_note_scroll_offset: 0,
         }
     }
 }
@@ -1350,6 +1353,53 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
             return Ok(());
         }
 
+        // 特殊处理：ViewNote dialog 支持滚动和编辑
+        if app.show_dialog == DialogType::ViewNote {
+            match key {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if app.view_note_scroll_offset > 0 {
+                        app.view_note_scroll_offset -= 1;
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    app.view_note_scroll_offset += 1;
+                }
+                KeyCode::PageUp => {
+                    app.view_note_scroll_offset = app.view_note_scroll_offset.saturating_sub(10);
+                }
+                KeyCode::PageDown => {
+                    app.view_note_scroll_offset += 10;
+                }
+                KeyCode::Home | KeyCode::Char('g') => {
+                    app.view_note_scroll_offset = 0;
+                }
+                KeyCode::End | KeyCode::Char('G') => {
+                    // 滚到底部：估算总行数
+                    if let Some(note) = app.selected_note() {
+                        let line_count = note.content.lines().count() + 10; // +10 为其他信息行
+                        app.view_note_scroll_offset = line_count.saturating_sub(20); // 假设窗口高度为20
+                    }
+                }
+                KeyCode::Char('e') => {
+                    // 编辑当前便签
+                    if let Some(note) = app.selected_note().cloned() {
+                        app.input_title = note.title;
+                        app.input_content = note.content;
+                        app.note_edit_field = 0;
+                        app.input_mode = InputMode::Normal;
+                        app.show_dialog = DialogType::EditNote;
+                        app.view_note_scroll_offset = 0;
+                    }
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    app.view_note_scroll_offset = 0;
+                    app.show_dialog = DialogType::None;
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
         match app.input_mode {
             InputMode::Insert => {
                 match key {
@@ -1726,6 +1776,14 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                             app.input_content.clear();
                         }
                         _ => {}
+                    }
+                    app.number_prefix.clear();
+                    app.last_key = Some(key);
+                }
+                KeyCode::Enter => {
+                    // Enter: 便签界面查看详情
+                    if app.current_tab == 1 && !app.notes.is_empty() {
+                        app.show_dialog = DialogType::ViewNote;
                     }
                     app.number_prefix.clear();
                     app.last_key = Some(key);
@@ -2209,9 +2267,37 @@ fn render_notes(f: &mut Frame, app: &mut App, area: Rect) {
     let card_height = 8; // 每个卡片的高度
     let num_rows = (app.notes.len() + cards_per_row - 1) / cards_per_row;
 
-    // 创建垂直布局
+    // 计算可见区域可以显示多少行
+    let visible_rows = ((area.height.saturating_sub(2)) / card_height) as usize; // 减去边框
+    let visible_rows = visible_rows.max(1); // 至少显示1行
+
+    // 根据选中的便签自动调整滚动偏移量
+    let selected_idx = app.note_list_state.selected().unwrap_or(0);
+    let selected_row = selected_idx / cards_per_row;
+
+    // 确保选中的行在可见范围内
+    let mut scroll_offset = app.note_scroll_offset;
+    if selected_row < scroll_offset {
+        scroll_offset = selected_row;
+    } else if selected_row >= scroll_offset + visible_rows {
+        scroll_offset = selected_row.saturating_sub(visible_rows - 1);
+    }
+
+    // 限制滚动偏移量
+    let max_scroll = num_rows.saturating_sub(visible_rows);
+    scroll_offset = scroll_offset.min(max_scroll);
+
+    // 更新app的滚动偏移量
+    app.note_scroll_offset = scroll_offset;
+
+    // 计算显示的行范围
+    let start_row = scroll_offset;
+    let end_row = (scroll_offset + visible_rows).min(num_rows);
+    let visible_row_count = end_row - start_row;
+
+    // 创建垂直布局（只为可见的行）
     let mut row_constraints = vec![];
-    for _ in 0..num_rows {
+    for _ in 0..visible_row_count {
         row_constraints.push(Constraint::Length(card_height));
     }
     row_constraints.push(Constraint::Min(0)); // 剩余空间
@@ -2222,10 +2308,10 @@ fn render_notes(f: &mut Frame, app: &mut App, area: Rect) {
         .margin(1)
         .split(area);
 
-    // 渲染每一行的卡片
+    // 渲染可见的卡片行
     let selected_idx = app.note_list_state.selected().unwrap_or(0);
 
-    for row_idx in 0..num_rows {
+    for (display_row_idx, row_idx) in (start_row..end_row).enumerate() {
         let start_idx = row_idx * cards_per_row;
         let end_idx = (start_idx + cards_per_row).min(app.notes.len());
 
@@ -2238,7 +2324,7 @@ fn render_notes(f: &mut Frame, app: &mut App, area: Rect) {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints(col_constraints)
-            .split(rows[row_idx]);
+            .split(rows[display_row_idx]);
 
         // 渲染该行的每个卡片
         for (col_idx, note_idx) in (start_idx..end_idx).enumerate() {
@@ -2875,6 +2961,56 @@ fn render_dialog(f: &mut Frame, app: &App) {
                 }
             }
         }
+        DialogType::ViewNote => {
+            if let Some(note) = app.selected_note() {
+                let mut content = vec![
+                    Line::from(""),
+                    Line::from(Span::styled(
+                        &note.title,
+                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    )),
+                    Line::from(""),
+                    Line::from(Span::styled("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", Style::default().fg(Color::DarkGray))),
+                    Line::from(""),
+                ];
+
+                // 添加便签内容，支持长内容换行
+                let note_lines: Vec<&str> = note.content.lines().collect();
+                for line in note_lines {
+                    content.push(Line::from(line));
+                }
+
+                content.extend(vec![
+                    Line::from(""),
+                    Line::from(Span::styled("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", Style::default().fg(Color::DarkGray))),
+                    Line::from(""),
+                    Line::from(format!(
+                        "创建: {}  更新: {}",
+                        note.created_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M"),
+                        note.updated_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M"),
+                    )),
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::styled("e", Style::default().fg(Color::Green)),
+                        Span::raw(" 编辑  "),
+                        Span::styled("Esc/q", Style::default().fg(Color::Yellow)),
+                        Span::raw(" 关闭"),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("j/k ↓/↑", Style::default().fg(Color::Yellow)),
+                        Span::styled(" 滚动 | ", Style::default().fg(Color::DarkGray)),
+                        Span::styled("g", Style::default().fg(Color::Yellow)),
+                        Span::styled(" 顶部 | ", Style::default().fg(Color::DarkGray)),
+                        Span::styled("G", Style::default().fg(Color::Yellow)),
+                        Span::styled(" 底部", Style::default().fg(Color::DarkGray)),
+                    ]),
+                ]);
+
+                ("查看便签", content)
+            } else {
+                ("查看便签", vec![Line::from("没有选中的便签")])
+            }
+        }
         _ => ("", vec![]),
     };
 
@@ -2890,6 +3026,11 @@ fn render_dialog(f: &mut Frame, app: &App) {
     // 为Help对话框添加滚动支持
     if app.show_dialog == DialogType::Help {
         paragraph = paragraph.scroll((app.help_scroll_offset as u16, 0));
+    }
+
+    // 为ViewNote对话框添加滚动支持
+    if app.show_dialog == DialogType::ViewNote {
+        paragraph = paragraph.scroll((app.view_note_scroll_offset as u16, 0));
     }
 
     f.render_widget(Clear, area);
