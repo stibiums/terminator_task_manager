@@ -437,6 +437,29 @@ impl App {
         Ok(())
     }
 
+    /// 使用 vim 创建新任务
+    pub fn create_task_with_vim(&mut self) -> Result<()> {
+        match self.edit_with_vim("") {
+            Ok(Some(title)) => {
+                let title = title.trim().to_string();
+                if !title.is_empty() {
+                    let db = Database::open(&self.db_path)?;
+                    let task = Task::new(title);
+                    let id = db.create_task(&task)?;
+                    self.reload_data()?;
+                    self.set_status_message(format!("任务 #{} 已创建", id));
+                }
+            }
+            Ok(None) => {
+                self.set_status_message("任务创建已取消".to_string());
+            }
+            Err(e) => {
+                self.set_status_message(format!("创建失败: {}", e));
+            }
+        }
+        Ok(())
+    }
+
     /// 初始化编辑任务（加载当前任务内容到输入框）
     pub fn init_edit_task(&mut self) {
         if let Some(task) = self.selected_task().cloned() {
@@ -445,6 +468,70 @@ impl App {
             self.show_dialog = DialogType::EditTask;
             self.input_mode = InputMode::Insert;
         }
+    }
+
+    /// 使用 vim 编辑任务
+    pub fn init_edit_task_with_vim(&mut self) -> Result<()> {
+        if let Some(task) = self.selected_task().cloned() {
+            match self.edit_with_vim(&task.title) {
+                Ok(Some(new_title)) => {
+                    let new_title = new_title.trim().to_string();
+                    if !new_title.is_empty() {
+                        let mut updated_task = task.clone();
+                        updated_task.title = new_title;
+                        updated_task.updated_at = Utc::now();
+
+                        let db = Database::open(&self.db_path)?;
+                        db.update_task(&updated_task)?;
+
+                        self.reload_data()?;
+                        self.set_status_message(format!("任务 #{} 已更新", task.id.unwrap_or(0)));
+                    }
+                }
+                Ok(None) => {
+                    self.set_status_message("任务编辑已取消".to_string());
+                }
+                Err(e) => {
+                    self.set_status_message(format!("编辑失败: {}", e));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// 使用 vim 创建便签
+    pub fn create_note_with_vim(&mut self) -> Result<()> {
+        // 初始内容格式：标题\n---\n内容
+        let initial_content = "便签标题\n---\n";
+
+        match self.edit_with_vim(initial_content) {
+            Ok(Some(edited)) => {
+                // 解析编辑后的内容：第一行是标题，分隔符后是内容
+                let parts: Vec<&str> = edited.splitn(2, "\n---\n").collect();
+
+                if parts.len() == 2 {
+                    let title = parts[0].trim().to_string();
+                    let content = parts[1].to_string();
+
+                    if !title.is_empty() && title != "便签标题" {
+                        let db = Database::open(&self.db_path)?;
+                        let note = Note::new(title, content);
+                        let id = db.create_note(&note)?;
+                        self.reload_data()?;
+                        self.set_status_message(format!("便签 #{} 已创建", id));
+                    } else {
+                        self.set_status_message("便签标题不能为空".to_string());
+                    }
+                }
+            }
+            Ok(None) => {
+                self.set_status_message("便签创建已取消".to_string());
+            }
+            Err(e) => {
+                self.set_status_message(format!("创建失败: {}", e));
+            }
+        }
+        Ok(())
     }
 
     /// 保存编辑后的任务
@@ -594,16 +681,22 @@ impl App {
 
         // 禁用原始模式，以便 vim 可以正常工作
         disable_raw_mode()?;
-        execute!(io::stdout(), LeaveAlternateScreen)?;
+        execute!(io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show)?;
 
         // 调用 vim
         let status = Command::new("vim")
             .arg(&temp_file)
             .status()?;
 
-        // 重新启用原始模式
+        // 重新启用原始模式和替代屏幕
         enable_raw_mode()?;
-        execute!(io::stdout(), EnterAlternateScreen)?;
+        execute!(
+            io::stdout(),
+            EnterAlternateScreen,
+            crossterm::cursor::Hide,
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+            crossterm::cursor::MoveTo(0, 0)
+        )?;
 
         // 检查 vim 是否成功编辑
         if !status.success() {
@@ -1153,6 +1246,48 @@ fn execute_command(app: &mut App) -> Result<()> {
                         }
                     } else {
                         app.set_status_message("没有可编辑的便签".to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Vim 编辑命令
+        "evim" | "vimedit" | "ev" => {
+            match app.current_tab {
+                0 => {
+                    if !app.tasks.is_empty() {
+                        if let Err(e) = app.init_edit_task_with_vim() {
+                            app.set_status_message(format!("编辑失败: {}", e));
+                        }
+                    } else {
+                        app.set_status_message("没有可编辑的任务".to_string());
+                    }
+                }
+                1 => {
+                    if !app.notes.is_empty() {
+                        if let Err(e) = app.init_edit_note() {
+                            app.set_status_message(format!("编辑失败: {}", e));
+                        }
+                    } else {
+                        app.set_status_message("没有可编辑的便签".to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Vim 创建命令
+        "nvim" | "vimnew" | "nv" => {
+            match app.current_tab {
+                0 => {
+                    if let Err(e) = app.create_task_with_vim() {
+                        app.set_status_message(format!("创建失败: {}", e));
+                    }
+                }
+                1 => {
+                    if let Err(e) = app.create_note_with_vim() {
+                        app.set_status_message(format!("创建失败: {}", e));
                     }
                 }
                 _ => {}
