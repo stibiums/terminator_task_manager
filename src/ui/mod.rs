@@ -442,8 +442,8 @@ impl App {
 
     /// 使用 vim 创建新任务
     pub fn create_task_with_vim(&mut self) -> Result<()> {
-        // 简洁的模板 - 直接为空，用户输入即可
-        let template = "";
+        // 简单的模板提示 - 用户直接替换即可
+        let template = "新任务标题";
         match self.edit_with_vim(template) {
             Ok(Some(content)) => {
                 // 获取第一行非空内容作为标题
@@ -454,14 +454,14 @@ impl App {
                     .trim()
                     .to_string();
 
-                if !title.is_empty() {
+                if !title.is_empty() && title != "新任务标题" {
                     let db = Database::open(&self.db_path)?;
                     let task = Task::new(title);
                     let id = db.create_task(&task)?;
                     self.reload_data()?;
                     self.set_status_message(format!("任务 #{} 已创建", id));
                 } else {
-                    self.set_status_message("任务标题不能为空".to_string());
+                    self.set_status_message("请输入任务标题".to_string());
                 }
             }
             Ok(None) => {
@@ -1268,14 +1268,17 @@ fn execute_command(app: &mut App) -> Result<()> {
                     _ => {}
                 }
             } else {
+                // 无参数时使用 vim 创建
                 match app.current_tab {
                     0 => {
-                        app.show_dialog = DialogType::CreateTask;
-                        app.input_mode = InputMode::Insert;
+                        if let Err(e) = app.create_task_with_vim() {
+                            app.set_status_message(format!("创建失败: {}", e));
+                        }
                     }
                     1 => {
-                        app.show_dialog = DialogType::CreateNote;
-                        app.input_mode = InputMode::Insert;
+                        if let Err(e) = app.create_note_with_vim() {
+                            app.set_status_message(format!("创建失败: {}", e));
+                        }
                     }
                     _ => {}
                 }
@@ -1287,7 +1290,9 @@ fn execute_command(app: &mut App) -> Result<()> {
             match app.current_tab {
                 0 => {
                     if !app.tasks.is_empty() {
-                        app.init_edit_task();
+                        if let Err(e) = app.init_edit_task_with_vim() {
+                            app.set_status_message(format!("编辑失败: {}", e));
+                        }
                     } else {
                         app.set_status_message("没有可编辑的任务".to_string());
                     }
@@ -2093,11 +2098,13 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                     app.last_key = Some(key);
                 }
                 KeyCode::Char('e') => {
-                    // 编辑当前项（高频）- 也可以用 :e 或 :edit
+                    // 编辑当前项（高频）- 使用 vim 编辑
                     match app.current_tab {
                         0 => {
                             if !app.tasks.is_empty() {
-                                app.init_edit_task();
+                                if let Err(e) = app.init_edit_task_with_vim() {
+                                    app.set_status_message(format!("编辑失败: {}", e));
+                                }
                             }
                         }
                         1 => {
