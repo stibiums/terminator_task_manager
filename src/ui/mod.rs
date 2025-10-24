@@ -1106,14 +1106,14 @@ fn run_ui_loop<B: ratatui::backend::Backend>(
     app: &mut App,
 ) -> Result<()> {
     loop {
-        terminal.draw(|f| ui(f, app))?;
-
-        // vim 退出后需要完整重绘，跳过 poll 直接进入下一帧
+        // vim 退出后需要完整重绘，先清空缓冲区再绘制
         if app.needs_full_redraw {
             app.needs_full_redraw = false;
+            terminal.clear()?;
             std::thread::sleep(std::time::Duration::from_millis(50));
-            continue;
         }
+
+        terminal.draw(|f| ui(f, app))?;
 
         // 使用较短的 poll 间隔以提高响应性，但用时间戳控制 tick 频率
         if event::poll(std::time::Duration::from_millis(100))? {
