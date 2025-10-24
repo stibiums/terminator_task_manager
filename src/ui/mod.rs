@@ -838,14 +838,14 @@ impl App {
 
     /// 计算帮助对话框的最大滚动偏移量
     pub fn get_help_max_scroll(&self) -> usize {
-        // 每个标签页的帮助内容行数估算
+        // 每个标签页的帮助内容行数（实际统计）
         let help_lines: usize = match self.current_tab {
-            0 => 30,  // 任务管理帮助
-            1 => 26,  // 便签墙帮助
+            0 => 36,  // 任务管理帮助（导航4行+任务操作6行+命令模式7行+分隔线+提示）
+            1 => 30,  // 便签墙帮助
             2 => 25,  // 番茄钟帮助
             _ => 20,
         };
-        let window_height: usize = 30;
+        let window_height: usize = 20; // 对话框可显示的行数
         help_lines.saturating_sub(window_height)
     }
 
