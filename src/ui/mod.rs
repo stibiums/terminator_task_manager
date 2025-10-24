@@ -849,11 +849,19 @@ impl App {
         help_lines.saturating_sub(window_height)
     }
 
-    /// 计算番茄钟界面的最大滚动偏移量
-    pub fn get_pomodoro_max_scroll(&self) -> usize {
-        // 番茄钟内容的行数（通常很少，所以通常不滚动）
-        let content_lines: usize = 20; // 估算行数
-        let window_height: usize = 40; // 番茄钟占据大部分空间
+    /// 计算番茄钟界面右侧信息面板的最大滚动偏移量
+    pub fn get_pomodoro_info_max_scroll(&self) -> usize {
+        // 计算右侧信息面板的内容行数
+        let mut content_lines: usize = 12; // 基础行数：标题、统计、配置、快捷键等
+
+        // 根据计时器状态添加额外行数
+        if self.pomodoro.state == crate::pomodoro::PomodoroState::Idle {
+            content_lines += 2; // 调整时长的额外行
+        } else {
+            content_lines += 1; // 滚动信息的额外行
+        }
+
+        let window_height: usize = 20; // 右侧窗口高度
         content_lines.saturating_sub(window_height)
     }
 }
@@ -1688,8 +1696,8 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                             }
                         }
                         2 => {
-                            // 番茄钟界面滚动
-                            let max_scroll = app.get_pomodoro_max_scroll();
+                            // 番茄钟界面滚动（右侧信息面板）
+                            let max_scroll = app.get_pomodoro_info_max_scroll();
                             app.pomodoro_scroll_offset = (app.pomodoro_scroll_offset + count).min(max_scroll);
                         }
                         _ => {}
@@ -2456,30 +2464,45 @@ fn render_pomodoro(f: &mut Frame, app: &mut App, area: Rect) {
     let time_remaining = app.pomodoro.format_remaining();
     let progress = app.pomodoro.progress();
 
-    // 生成进度圆环（简单ASCII风格）
-    let progress_percent = progress as i32;
-    let progress_char = match progress_percent {
-        0..=20 => "◜",
-        21..=40 => "◝",
-        41..=60 => "◞",
-        61..=80 => "◟",
-        _ => "◜",
+    // 生成现代极简风格的进度条
+    let progress_blocks = "◼".repeat((progress / 5.0) as usize);
+    let empty_blocks = "░".repeat(20 - progress_blocks.len());
+
+    // 根据进度调整进度条颜色
+    let progress_color = if progress < 30.0 {
+        Color::Green
+    } else if progress < 70.0 {
+        Color::Yellow
+    } else {
+        Color::Red
     };
 
     let mut timer_display = vec![
         Line::from(""),
-        // 进度圆环顶部
+        // 分隔线
         Line::from(Span::styled(
-            format!("  {}─── {:.0}% ───◝", progress_char, progress),
-            Style::default().fg(Color::Cyan),
+            "─────────────────",
+            Style::default().fg(Color::DarkGray),
         )),
         Line::from(""),
-        // 大型时间显示
+        // 时间显示（大型、加粗、下划线）
         Line::from(Span::styled(
-            &time_remaining,
+            format!("  ⏱ {}  ", &time_remaining),
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )),
+        Line::from(""),
+        // 进度条
+        Line::from(Span::styled(
+            format!("  {}{}", progress_blocks, empty_blocks),
+            Style::default().fg(progress_color).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        // 进度百分比
+        Line::from(Span::styled(
+            format!("    {:.0}%", progress),
+            Style::default().fg(progress_color),
         )),
         Line::from(""),
         // 状态显示
@@ -2488,10 +2511,10 @@ fn render_pomodoro(f: &mut Frame, app: &mut App, area: Rect) {
             Style::default().fg(state_color).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        // 进度圆环底部
+        // 分隔线
         Line::from(Span::styled(
-            format!("  ◟─── {}/100 ───{}", progress_percent, progress_char),
-            Style::default().fg(Color::Cyan),
+            "─────────────────",
+            Style::default().fg(Color::DarkGray),
         )),
     ];
 
@@ -2542,18 +2565,39 @@ fn render_pomodoro(f: &mut Frame, app: &mut App, area: Rect) {
             "⌨️ 快捷键",
             Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
         )),
-        Line::from("  s     开始/暂停"),
-        Line::from("  S     停止"),
+        Line::from(vec![
+            Span::styled("  s", Style::default().fg(Color::Cyan)),
+            Span::raw("     开始/暂停"),
+        ]),
+        Line::from(vec![
+            Span::styled("  S", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::raw("     "),
+            Span::styled("取消计时", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        ]),
     ];
 
     if app.pomodoro.state == crate::pomodoro::PomodoroState::Idle {
-        info_content.push(Line::from("  +/-   调整工作时长"));
-        info_content.push(Line::from("  []    调整休息时长"));
+        info_content.push(Line::from(vec![
+            Span::styled("  +/-", Style::default().fg(Color::Cyan)),
+            Span::raw("   调整工作时长"),
+        ]));
+        info_content.push(Line::from(vec![
+            Span::styled("  []", Style::default().fg(Color::Cyan)),
+            Span::raw("    调整休息时长"),
+        ]));
+    } else {
+        info_content.push(Line::from(""));
+        info_content.push(Line::from(vec![
+            Span::styled("↑↓", Style::default().fg(Color::Cyan)),
+            Span::raw(" 或 "),
+            Span::styled("j/k", Style::default().fg(Color::Cyan)),
+            Span::raw("    滚动信息"),
+        ]));
     }
 
     info_content.extend(vec![
         Line::from(""),
-        Line::from("  ? 打开帮助  : 进入命令"),
+        Line::from("  ? 帮助  : 命令  h/l 切标签"),
     ]);
 
     let info_block = Block::default()
