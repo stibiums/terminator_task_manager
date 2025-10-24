@@ -14,6 +14,8 @@ use ratatui::{
     Frame, Terminal,
 };
 use std::io;
+use std::fs;
+use std::process::Command;
 
 use crate::db::Database;
 use crate::models::{Note, PomodoroSession, Priority, Task, TaskStatus};
@@ -505,15 +507,43 @@ impl App {
     }
 
     /// 初始化编辑便签（加载当前便签内容到输入框）
-    pub fn init_edit_note(&mut self) {
+    pub fn init_edit_note(&mut self) -> Result<()> {
         if let Some(note) = self.selected_note().cloned() {
-            self.input_title = note.title.clone();
-            self.input_content = note.content.clone();
-            self.input_buffer.clear(); // 清空buffer，等待用户选择字段
-            self.note_edit_field = 0; // 从标题开始
-            self.show_dialog = DialogType::EditNote;
-            self.input_mode = InputMode::Normal; // 先进Normal模式，让用户选择编辑哪个字段
+            // 构建初始内容：标题和内容
+            let initial_content = format!("{}\n---\n{}", note.title, note.content);
+
+            // 使用 vim 编辑
+            match self.edit_with_vim(&initial_content) {
+                Ok(Some(edited)) => {
+                    // 解析编辑后的内容：第一行是标题，分隔符后是内容
+                    let parts: Vec<&str> = edited.splitn(2, "\n---\n").collect();
+
+                    if parts.len() == 2 {
+                        let new_title = parts[0].trim().to_string();
+                        let new_content = parts[1].to_string();
+
+                        // 更新数据库
+                        let mut updated_note = note.clone();
+                        updated_note.title = new_title;
+                        updated_note.content = new_content;
+                        updated_note.updated_at = Utc::now();
+
+                        let db = Database::open(&self.db_path)?;
+                        db.update_note(&updated_note)?;
+
+                        self.reload_data()?;
+                        self.set_status_message(format!("便签 #{} 已更新", note.id.unwrap_or(0)));
+                    }
+                }
+                Ok(None) => {
+                    self.set_status_message("便签编辑已取消".to_string());
+                }
+                Err(e) => {
+                    self.set_status_message(format!("编辑失败: {}", e));
+                }
+            }
         }
+        Ok(())
     }
 
     /// 保存编辑后的便签
@@ -551,6 +581,44 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    /// 使用系统 vim 编辑文本
+    pub fn edit_with_vim(&mut self, initial_content: &str) -> Result<Option<String>> {
+        // 生成唯一的临时文件名
+        let mut temp_file = std::env::temp_dir();
+        temp_file.push(format!("terminator_edit_{}", chrono::Local::now().timestamp_millis()));
+
+        // 写入初始内容
+        fs::write(&temp_file, initial_content)?;
+
+        // 禁用原始模式，以便 vim 可以正常工作
+        disable_raw_mode()?;
+        execute!(io::stdout(), LeaveAlternateScreen)?;
+
+        // 调用 vim
+        let status = Command::new("vim")
+            .arg(&temp_file)
+            .status()?;
+
+        // 重新启用原始模式
+        enable_raw_mode()?;
+        execute!(io::stdout(), EnterAlternateScreen)?;
+
+        // 检查 vim 是否成功编辑
+        if !status.success() {
+            fs::remove_file(&temp_file).ok();
+            self.set_status_message("Vim 编辑取消".to_string());
+            return Ok(None);
+        }
+
+        // 读取编辑后的内容
+        let edited_content = fs::read_to_string(&temp_file)?;
+
+        // 删除临时文件
+        fs::remove_file(&temp_file)?;
+
+        Ok(Some(edited_content))
     }
 
     /// 循环切换任务优先级
@@ -1080,7 +1148,9 @@ fn execute_command(app: &mut App) -> Result<()> {
                 }
                 1 => {
                     if !app.notes.is_empty() {
-                        app.init_edit_note();
+                        if let Err(e) = app.init_edit_note() {
+                            app.set_status_message(format!("编辑失败: {}", e));
+                        }
                     } else {
                         app.set_status_message("没有可编辑的便签".to_string());
                     }
@@ -1848,7 +1918,9 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                         }
                         1 => {
                             if !app.notes.is_empty() {
-                                app.init_edit_note();
+                                if let Err(e) = app.init_edit_note() {
+                                    app.set_status_message(format!("编辑失败: {}", e));
+                                }
                             }
                         }
                         _ => {}
