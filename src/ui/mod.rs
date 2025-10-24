@@ -818,6 +818,44 @@ impl App {
         self.show_dialog = DialogType::None;
         Ok(())
     }
+
+    /// 计算 ViewNote 对话框的最大滚动偏移量
+    pub fn get_view_note_max_scroll(&self) -> usize {
+        if let Some(note) = self.selected_note() {
+            // 计算便签内容的总行数
+            let mut total_lines = note.content.lines().count();
+            total_lines += 10; // 加上其他信息行（标题、分隔线、时间戳、快捷键等）
+
+            // 假设对话框窗口高度为 30 行（居中矩形 40% 的高度）
+            let window_height = 30;
+
+            // 最大滚动偏移量 = 总行数 - 窗口高度
+            total_lines.saturating_sub(window_height)
+        } else {
+            0
+        }
+    }
+
+    /// 计算帮助对话框的最大滚动偏移量
+    pub fn get_help_max_scroll(&self) -> usize {
+        // 每个标签页的帮助内容行数估算
+        let help_lines: usize = match self.current_tab {
+            0 => 30,  // 任务管理帮助
+            1 => 26,  // 便签墙帮助
+            2 => 25,  // 番茄钟帮助
+            _ => 20,
+        };
+        let window_height: usize = 30;
+        help_lines.saturating_sub(window_height)
+    }
+
+    /// 计算番茄钟界面的最大滚动偏移量
+    pub fn get_pomodoro_max_scroll(&self) -> usize {
+        // 番茄钟内容的行数（通常很少，所以通常不滚动）
+        let content_lines: usize = 20; // 估算行数
+        let window_height: usize = 40; // 番茄钟占据大部分空间
+        content_lines.saturating_sub(window_height)
+    }
 }
 
 /// 运行TUI应用
@@ -1326,6 +1364,7 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
 
         // 特殊处理：Help dialog 支持滚动
         if app.show_dialog == DialogType::Help {
+            let max_scroll = app.get_help_max_scroll();
             match key {
                 KeyCode::Up | KeyCode::Char('k') => {
                     if app.help_scroll_offset > 0 {
@@ -1333,16 +1372,19 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                     }
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    app.help_scroll_offset += 1;
+                    app.help_scroll_offset = (app.help_scroll_offset + 1).min(max_scroll);
                 }
                 KeyCode::PageUp => {
                     app.help_scroll_offset = app.help_scroll_offset.saturating_sub(10);
                 }
                 KeyCode::PageDown => {
-                    app.help_scroll_offset += 10;
+                    app.help_scroll_offset = (app.help_scroll_offset + 10).min(max_scroll);
                 }
                 KeyCode::Home | KeyCode::Char('g') => {
                     app.help_scroll_offset = 0;
+                }
+                KeyCode::End | KeyCode::Char('G') => {
+                    app.help_scroll_offset = max_scroll;
                 }
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
                     app.help_scroll_offset = 0;
@@ -1355,6 +1397,7 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
 
         // 特殊处理：ViewNote dialog 支持滚动和编辑
         if app.show_dialog == DialogType::ViewNote {
+            let max_scroll = app.get_view_note_max_scroll();
             match key {
                 KeyCode::Up | KeyCode::Char('k') => {
                     if app.view_note_scroll_offset > 0 {
@@ -1362,23 +1405,20 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                     }
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    app.view_note_scroll_offset += 1;
+                    app.view_note_scroll_offset = (app.view_note_scroll_offset + 1).min(max_scroll);
                 }
                 KeyCode::PageUp => {
                     app.view_note_scroll_offset = app.view_note_scroll_offset.saturating_sub(10);
                 }
                 KeyCode::PageDown => {
-                    app.view_note_scroll_offset += 10;
+                    app.view_note_scroll_offset = (app.view_note_scroll_offset + 10).min(max_scroll);
                 }
                 KeyCode::Home | KeyCode::Char('g') => {
                     app.view_note_scroll_offset = 0;
                 }
                 KeyCode::End | KeyCode::Char('G') => {
-                    // 滚到底部：估算总行数
-                    if let Some(note) = app.selected_note() {
-                        let line_count = note.content.lines().count() + 10; // +10 为其他信息行
-                        app.view_note_scroll_offset = line_count.saturating_sub(20); // 假设窗口高度为20
-                    }
+                    // 滚到底部
+                    app.view_note_scroll_offset = max_scroll;
                 }
                 KeyCode::Char('e') => {
                     // 编辑当前便签
@@ -1649,7 +1689,8 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                         }
                         2 => {
                             // 番茄钟界面滚动
-                            app.pomodoro_scroll_offset += count;
+                            let max_scroll = app.get_pomodoro_max_scroll();
+                            app.pomodoro_scroll_offset = (app.pomodoro_scroll_offset + count).min(max_scroll);
                         }
                         _ => {}
                     }
