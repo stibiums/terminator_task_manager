@@ -71,6 +71,8 @@ pub struct App {
     pub pomodoro_scroll_offset: usize,
     pub note_scroll_offset: usize,
     pub view_note_scroll_offset: usize, // ViewNote对话框滚动
+    // 完整重绘标志（vim 退出后需要重绘）
+    pub needs_full_redraw: bool,
 }
 
 /// 输入模式
@@ -140,6 +142,7 @@ impl Default for App {
             pomodoro_scroll_offset: 0,
             note_scroll_offset: 0,
             view_note_scroll_offset: 0,
+            needs_full_redraw: false,
         }
     }
 }
@@ -710,21 +713,27 @@ impl App {
             .arg(&temp_file)
             .status()?;
 
-        // 小延迟，确保终端状态恢复
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        // 延迟确保终端状态恢复
+        std::thread::sleep(std::time::Duration::from_millis(100));
 
-        // 重新启用原始模式和替代屏幕
-        enable_raw_mode()?;
-
+        // 完整的终端恢复和重初始化
         let mut stdout = io::stdout();
+
+        // 先清空所有终端状态
         execute!(
             stdout,
-            EnterAlternateScreen,
-            crossterm::cursor::Hide,
+            crossterm::terminal::EnterAlternateScreen,
             crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
-            crossterm::cursor::MoveTo(0, 0)
+            crossterm::cursor::MoveTo(0, 0),
+            crossterm::cursor::Hide,
         )?;
         stdout.flush()?;
+
+        // 重新启用原始模式
+        enable_raw_mode()?;
+
+        // 标记需要完整重绘
+        self.needs_full_redraw = true;
 
         // 检查 vim 是否成功编辑
         if !status.success() {
@@ -1104,6 +1113,13 @@ fn run_ui_loop<B: ratatui::backend::Backend>(
 ) -> Result<()> {
     loop {
         terminal.draw(|f| ui(f, app))?;
+
+        // vim 退出后需要完整重绘，跳过 poll 直接进入下一帧
+        if app.needs_full_redraw {
+            app.needs_full_redraw = false;
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            continue;
+        }
 
         // 使用较短的 poll 间隔以提高响应性，但用时间戳控制 tick 频率
         if event::poll(std::time::Duration::from_millis(100))? {
