@@ -2704,6 +2704,36 @@ fn render_dialog(f: &mut Frame, app: &App) {
                 ("内容", "输入内容后按 Enter 创建")
             };
 
+            // 处理长输入，截断或显示预览
+            let title_display = if app.input_title.is_empty() {
+                let buf = &app.input_buffer;
+                if buf.len() > 40 {
+                    format!("{}...", &buf[..40])
+                } else {
+                    buf.clone()
+                }
+            } else {
+                if app.input_title.len() > 40 {
+                    format!("{}...", &app.input_title[..40])
+                } else {
+                    app.input_title.clone()
+                }
+            };
+
+            let content_display = if !app.input_title.is_empty() {
+                let buf = &app.input_buffer;
+                // 显示内容的前两行
+                let lines: Vec<&str> = buf.lines().take(2).collect();
+                let preview = lines.join("\n");
+                if preview.len() > 40 {
+                    format!("{}...", &preview[..40.min(preview.len())])
+                } else {
+                    preview
+                }
+            } else {
+                String::new()
+            };
+
             ("创建新便签", vec![
                 Line::from(""),
                 Line::from(vec![
@@ -2717,14 +2747,17 @@ fn render_dialog(f: &mut Frame, app: &App) {
                         }
                     ),
                 ]),
-                Line::from(Span::styled(
-                    if app.input_title.is_empty() {
-                        &app.input_buffer
+                Line::from(vec![
+                    Span::styled(
+                        format!("  {}", title_display),
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    if app.input_title.is_empty() && app.input_buffer.len() > 40 {
+                        Span::styled(" (有更多内容)", Style::default().fg(Color::DarkGray))
                     } else {
-                        &app.input_title
-                    },
-                    Style::default().fg(Color::Yellow),
-                )),
+                        Span::raw("")
+                    }
+                ]),
                 Line::from(""),
                 Line::from(vec![
                     Span::styled("第2步: ", Style::default().fg(Color::Gray)),
@@ -2737,14 +2770,17 @@ fn render_dialog(f: &mut Frame, app: &App) {
                         }
                     ),
                 ]),
-                Line::from(Span::styled(
-                    if !app.input_title.is_empty() {
-                        &app.input_buffer
+                Line::from(vec![
+                    Span::styled(
+                        format!("  {}", content_display),
+                        Style::default().fg(Color::Cyan),
+                    ),
+                    if !app.input_title.is_empty() && app.input_buffer.len() > 40 {
+                        Span::styled(" (有更多内容)", Style::default().fg(Color::DarkGray))
                     } else {
-                        ""
-                    },
-                    Style::default().fg(Color::Cyan),
-                )),
+                        Span::raw("")
+                    }
+                ]),
                 Line::from(""),
                 Line::from(vec![
                     Span::raw("当前: "),
@@ -2752,7 +2788,7 @@ fn render_dialog(f: &mut Frame, app: &App) {
                 ]),
                 Line::from(""),
                 Line::from(instructions),
-                Line::from("Esc: 取消"),
+                Line::from("Esc: 取消  ← → 移动  Home/End: 首/末"),
             ])
         }
         DialogType::EditTask => {
@@ -2770,32 +2806,67 @@ fn render_dialog(f: &mut Frame, app: &App) {
         }
         DialogType::EditNote => {
             let mode_hint = match app.input_mode {
-                InputMode::Normal => "↑/↓/k/j:选择字段 | i:编辑 | Esc:取消",
-                InputMode::Insert => "输入内容 | Enter:保存字段 | Esc:返回选择",
+                InputMode::Normal => "↑/↓:选字段 | i:编辑 | Esc:取消",
+                InputMode::Insert => "←→:移动光标 | Home/End:首/末 | Enter:保存 | Esc:返回",
                 _ => "",
             };
 
-            // 显示标题和内容，根据当前模式选择显示哪个
+            // 构建标题显示，包含光标
             let title_display = if app.note_edit_field == 0 && app.input_mode == InputMode::Insert {
-                &app.input_buffer  // 正在编辑标题时，显示buffer
+                // 编辑标题时，显示带光标的内容
+                let mut display = String::new();
+                let buffer = &app.input_buffer;
+                let char_count = buffer.chars().count();
+
+                for (i, ch) in buffer.chars().enumerate() {
+                    if i == app.cursor_position {
+                        display.push('│'); // 光标
+                    }
+                    display.push(ch);
+                }
+                if app.cursor_position == char_count {
+                    display.push('│'); // 末尾光标
+                }
+                display
+            } else if app.note_edit_field == 0 && app.input_mode == InputMode::Normal {
+                format!("[选中] {}", app.input_title)
             } else {
-                &app.input_title   // 否则显示保存的标题
+                app.input_title.clone()
             };
 
+            // 构建内容显示，包含光标
             let content_display = if app.note_edit_field == 1 && app.input_mode == InputMode::Insert {
-                &app.input_buffer  // 正在编辑内容时，显示buffer
+                // 编辑内容时，显示带光标的内容，支持长文本
+                let mut display = String::new();
+                let buffer = &app.input_buffer;
+                let char_count = buffer.chars().count();
+
+                // 显示前面的部分
+                for (i, ch) in buffer.chars().enumerate() {
+                    if i == app.cursor_position {
+                        display.push('│'); // 光标
+                    }
+                    if ch == '\n' {
+                        display.push('\n');
+                        display.push_str("  "); // 缩进新行
+                    } else {
+                        display.push(ch);
+                    }
+                }
+                if app.cursor_position == char_count {
+                    display.push('│'); // 末尾光标
+                }
+                display
+            } else if app.note_edit_field == 1 && app.input_mode == InputMode::Normal {
+                format!("[选中] {}", app.input_content)
             } else {
-                &app.input_content // 否则显示保存的内容
+                app.input_content.clone()
             };
 
             ("编辑便签", vec![
                 Line::from(""),
                 Line::from(vec![
                     Span::styled("标题: ", Style::default().fg(Color::Gray)),
-                    Span::styled(
-                        if app.note_edit_field == 0 { "[选中]" } else { "" },
-                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-                    ),
                 ]),
                 Line::from(Span::styled(
                     title_display,
@@ -2810,10 +2881,6 @@ fn render_dialog(f: &mut Frame, app: &App) {
                 Line::from(""),
                 Line::from(vec![
                     Span::styled("内容: ", Style::default().fg(Color::Gray)),
-                    Span::styled(
-                        if app.note_edit_field == 1 { "[选中]" } else { "" },
-                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-                    ),
                 ]),
                 Line::from(Span::styled(
                     content_display,

@@ -73,6 +73,8 @@ impl PomodoroTimer {
     /// 恢复
     pub fn resume(&mut self) {
         if self.state == PomodoroState::Paused {
+            // 需要记录之前的状态，现在简单处理：恢复到Working
+            // 理想情况下应该保存之前的状态
             self.state = PomodoroState::Working;
         }
     }
@@ -102,17 +104,31 @@ impl PomodoroTimer {
 
     /// 获取进度百分比
     pub fn progress(&self) -> f32 {
-        let total = match self.state {
-            PomodoroState::Working => self.work_duration * 60,
-            PomodoroState::Break => self.break_duration * 60,
-            _ => return 0.0,
+        // 在 Paused 状态时，也应该显示当前的进度（基于之前的状态）
+        // 这里我们使用 remaining_seconds 来推断之前的状态时长
+        let total = if self.remaining_seconds > 0 {
+            // 通过 remaining_seconds 推断总时长
+            // 如果小于 work_duration，则是 work_duration；否则是 break_duration
+            if self.remaining_seconds <= self.work_duration * 60 {
+                self.work_duration * 60
+            } else {
+                self.break_duration * 60
+            }
+        } else {
+            match self.state {
+                PomodoroState::Working => self.work_duration * 60,
+                PomodoroState::Break => self.break_duration * 60,
+                _ => return 0.0,
+            }
         };
 
         if total == 0 {
             return 0.0;
         }
 
-        ((total - self.remaining_seconds) as f32 / total as f32) * 100.0
+        let progress = ((total - self.remaining_seconds) as f32 / total as f32) * 100.0;
+        // 确保进度在 0-100 之间
+        progress.max(0.0).min(100.0)
     }
 
     /// 格式化剩余时间
