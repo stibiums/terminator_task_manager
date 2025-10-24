@@ -2430,6 +2430,16 @@ fn render_notes(f: &mut Frame, app: &mut App, area: Rect) {
 
 /// 渲染番茄钟
 fn render_pomodoro(f: &mut Frame, app: &mut App, area: Rect) {
+    // 分割界面：计时显示 + 下方信息
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(15),  // 计时显示区域
+            Constraint::Min(0),      // 下方信息区域
+        ])
+        .split(area);
+
+    // ========== 上部：大型计时显示 ==========
     let state_text = match app.pomodoro.state {
         crate::pomodoro::PomodoroState::Idle => "⏸️  空闲",
         crate::pomodoro::PomodoroState::Working => "🔥 工作中",
@@ -2437,81 +2447,105 @@ fn render_pomodoro(f: &mut Frame, app: &mut App, area: Rect) {
         crate::pomodoro::PomodoroState::Paused => "⏸️  已暂停",
     };
 
-    let progress_bar = "█".repeat((app.pomodoro.progress() / 5.0) as usize);
+    let state_color = match app.pomodoro.state {
+        crate::pomodoro::PomodoroState::Working => Color::Red,
+        crate::pomodoro::PomodoroState::Break => Color::Green,
+        _ => Color::Gray,
+    };
 
-    let mut content = vec![
+    let time_remaining = app.pomodoro.format_remaining();
+    let progress = app.pomodoro.progress();
+    let progress_bar = "█".repeat((progress / 2.0) as usize); // 每 2% 一个块
+
+    let mut timer_display = vec![
         Line::from(""),
         Line::from(Span::styled(
-            "🍅 番茄钟计时器",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            state_text,
+            Style::default().fg(state_color).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from(vec![
-            Span::raw("状态: "),
-            Span::styled(state_text, Style::default().fg(Color::Yellow)),
-        ]),
+        // 大型时间显示
+        Line::from(Span::styled(
+            &time_remaining,
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
         Line::from(""),
-        Line::from(vec![
-            Span::raw("剩余时间: "),
-            Span::styled(
-                app.pomodoro.format_remaining(),
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
+        // 进度条
+        Line::from(Span::styled(
+            format!("[{}{}] {:.0}%",
+                progress_bar,
+                " ".repeat(50 - progress_bar.len()),
+                progress
             ),
-        ]),
-        Line::from(""),
-        Line::from(format!("进度: [{}{}] {:.0}%",
-            progress_bar,
-            " ".repeat(20 - progress_bar.len()),
-            app.pomodoro.progress()
+            if progress < 30.0 {
+                Style::default().fg(Color::Green)
+            } else if progress < 70.0 {
+                Style::default().fg(Color::Yellow)
+            } else {
+                Style::default().fg(Color::Red)
+            },
         )),
-        Line::from(""),
     ];
 
-    // 统计信息
-    content.push(Line::from(""));
-    content.push(Line::from(Span::styled(
-        "📊 统计",
-        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
-    )));
-    content.push(Line::from(format!("今日完成: {} 个番茄钟", app.pomodoro_completed_today)));
-    content.push(Line::from(format!("专注时长: {} 分钟", app.pomodoro_total_minutes)));
-    content.push(Line::from(""));
+    let timer_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Magenta))
+        .title(Span::styled(
+            " ⏱️ 计时器 ",
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ));
 
-    // 配置信息
-    content.push(Line::from(Span::styled(
-        "⚙️ 配置",
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-    )));
-    content.push(Line::from(format!("工作时长: {} 分钟", app.pomodoro.work_duration)));
-    content.push(Line::from(format!("休息时长: {} 分钟", app.pomodoro.break_duration)));
-    content.push(Line::from(""));
-    content.push(Line::from(""));
+    let timer_para = Paragraph::new(timer_display)
+        .block(timer_block)
+        .alignment(Alignment::Center);
 
-    // 快捷键
-    content.push(Line::from("快捷键:"));
-    content.push(Line::from("  s       - 开始/暂停"));
-    content.push(Line::from("  S       - 停止"));
+    f.render_widget(timer_para, chunks[0]);
+
+    // ========== 下部：状态、统计、配置、快捷键 ==========
+    let mut info_content = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "📊 统计",
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(format!(
+            "  今日完成: {} 个番茄钟 | 专注时长: {} 分钟",
+            app.pomodoro_completed_today,
+            app.pomodoro_total_minutes
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "⚙️ 配置",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(format!(
+            "  工作: {} 分钟 | 休息: {} 分钟",
+            app.pomodoro.work_duration,
+            app.pomodoro.break_duration
+        )),
+        Line::from(""),
+        Line::from("快捷键:  s 开始/暂停  |  S 停止"),
+    ];
+
     if app.pomodoro.state == crate::pomodoro::PomodoroState::Idle {
-        content.push(Line::from("  +/-     - 调整工作时长(±5分钟)"));
-        content.push(Line::from("  [ / ]   - 调整休息时长(±1分钟)"));
+        info_content.push(Line::from("             +/- 调整工作时长  |  [/] 调整休息时长"));
     }
 
-    let paragraph = Paragraph::new(content)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Red))
-                .title(Span::styled(
-                    " 🍅 番茄钟 ",
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-                ))
-        )
-        .alignment(Alignment::Center)
-        .scroll((app.pomodoro_scroll_offset as u16, 0)); // 添加滚动支持
+    let info_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Red))
+        .title(Span::styled(
+            " 🍅 番茄钟 ",
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ));
 
-    f.render_widget(paragraph, area);
+    let info_para = Paragraph::new(info_content)
+        .block(info_block)
+        .scroll((app.pomodoro_scroll_offset as u16, 0));
+
+    f.render_widget(info_para, chunks[1]);
 }
 
 /// 渲染状态栏
