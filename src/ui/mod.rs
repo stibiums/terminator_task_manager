@@ -1833,6 +1833,7 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                     // Enter: 便签界面查看详情
                     if app.current_tab == 1 && !app.notes.is_empty() {
                         app.show_dialog = DialogType::ViewNote;
+                        app.view_note_scroll_offset = 0; // 重置滚动位置
                     }
                     app.number_prefix.clear();
                     app.last_key = Some(key);
@@ -2464,9 +2465,11 @@ fn render_pomodoro(f: &mut Frame, app: &mut App, area: Rect) {
     let time_remaining = app.pomodoro.format_remaining();
     let progress = app.pomodoro.progress();
 
-    // 生成现代极简风格的进度条
-    let progress_blocks = "◼".repeat((progress / 5.0) as usize);
-    let empty_blocks = "░".repeat(20 - progress_blocks.len());
+    // 生成线性进度条：走过的部分用设定颜色，未走的部分用浅灰色
+    let progress_blocks_count = ((progress / 100.0) * 20.0) as usize;
+    let progress_blocks_count = progress_blocks_count.min(20); // 确保不超过20
+    let filled_blocks = "◼".repeat(progress_blocks_count);
+    let empty_blocks = "◼".repeat(20 - progress_blocks_count);
 
     // 根据进度调整进度条颜色
     let progress_color = if progress < 30.0 {
@@ -2493,11 +2496,18 @@ fn render_pomodoro(f: &mut Frame, app: &mut App, area: Rect) {
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )),
         Line::from(""),
-        // 进度条
-        Line::from(Span::styled(
-            format!("  {}{}", progress_blocks, empty_blocks),
-            Style::default().fg(progress_color).add_modifier(Modifier::BOLD),
-        )),
+        // 进度条：走过的部分用彩色，未走的部分用浅灰色
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                filled_blocks,
+                Style::default().fg(progress_color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                empty_blocks,
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]),
         Line::from(""),
         // 进度百分比
         Line::from(Span::styled(
@@ -3116,21 +3126,45 @@ fn render_dialog(f: &mut Frame, app: &App) {
                     Line::from(""),
                 ];
 
-                // 添加便签内容，支持长内容换行
+                // 添加便签内容，自动换行处理长行
                 let note_lines: Vec<&str> = note.content.lines().collect();
                 for line in note_lines {
-                    content.push(Line::from(line));
+                    // 对每一行进行处理，如果太长就截断提示
+                    if line.len() > 50 {
+                        // 长行分割显示
+                        let mut remaining = line;
+                        while !remaining.is_empty() {
+                            if remaining.len() > 50 {
+                                content.push(Line::from(format!("  {}", &remaining[..50])));
+                                remaining = &remaining[50..];
+                            } else {
+                                content.push(Line::from(format!("  {}", remaining)));
+                                remaining = "";
+                            }
+                        }
+                    } else if line.is_empty() {
+                        content.push(Line::from(""));
+                    } else {
+                        content.push(Line::from(format!("  {}", line)));
+                    }
                 }
 
                 content.extend(vec![
                     Line::from(""),
                     Line::from(Span::styled("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", Style::default().fg(Color::DarkGray))),
                     Line::from(""),
-                    Line::from(format!(
-                        "创建: {}  更新: {}",
-                        note.created_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M"),
-                        note.updated_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M"),
-                    )),
+                    Line::from(vec![
+                        Span::raw("创建: "),
+                        Span::styled(
+                            note.created_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string(),
+                            Style::default().fg(Color::Cyan),
+                        ),
+                        Span::raw("  更新: "),
+                        Span::styled(
+                            note.updated_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string(),
+                            Style::default().fg(Color::Cyan),
+                        ),
+                    ]),
                     Line::from(""),
                     Line::from(vec![
                         Span::styled("e", Style::default().fg(Color::Green)),
@@ -3139,12 +3173,10 @@ fn render_dialog(f: &mut Frame, app: &App) {
                         Span::raw(" 关闭"),
                     ]),
                     Line::from(vec![
-                        Span::styled("j/k ↓/↑", Style::default().fg(Color::Yellow)),
-                        Span::styled(" 滚动 | ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("g", Style::default().fg(Color::Yellow)),
-                        Span::styled(" 顶部 | ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("G", Style::default().fg(Color::Yellow)),
-                        Span::styled(" 底部", Style::default().fg(Color::DarkGray)),
+                        Span::styled("j/k", Style::default().fg(Color::Yellow)),
+                        Span::raw(" 滚动  "),
+                        Span::styled("g/G", Style::default().fg(Color::Yellow)),
+                        Span::raw(" 首/末"),
                     ]),
                 ]);
 
