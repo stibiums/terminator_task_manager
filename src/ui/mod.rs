@@ -13,7 +13,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap},
     Frame, Terminal,
 };
-use std::io;
+use std::io::{self, Write};
 use std::fs;
 use std::process::Command;
 
@@ -439,15 +439,26 @@ impl App {
 
     /// 使用 vim 创建新任务
     pub fn create_task_with_vim(&mut self) -> Result<()> {
-        match self.edit_with_vim("") {
-            Ok(Some(title)) => {
-                let title = title.trim().to_string();
-                if !title.is_empty() {
+        // 提供模板和说明
+        let template = "请输入任务标题（删除这一行及以下的说明）\n\n--- 模板说明 ---\n第一行：任务标题\n保存并退出 vim 来创建任务\n";
+        match self.edit_with_vim(template) {
+            Ok(Some(content)) => {
+                // 获取第一行作为标题（跳过空行和说明）
+                let title = content
+                    .lines()
+                    .find(|line| !line.is_empty() && !line.starts_with("---") && !line.starts_with("第"))
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+
+                if !title.is_empty() && !title.starts_with("请输入") {
                     let db = Database::open(&self.db_path)?;
                     let task = Task::new(title);
                     let id = db.create_task(&task)?;
                     self.reload_data()?;
                     self.set_status_message(format!("任务 #{} 已创建", id));
+                } else {
+                    self.set_status_message("任务标题不能为空".to_string());
                 }
             }
             Ok(None) => {
@@ -501,27 +512,37 @@ impl App {
 
     /// 使用 vim 创建便签
     pub fn create_note_with_vim(&mut self) -> Result<()> {
-        // 初始内容格式：标题\n---\n内容
-        let initial_content = "便签标题\n---\n";
+        // 提供模板和说明
+        let template = "便签标题\n---\n请输入便签内容\n\n--- 说明 ---\n第一部分：便签标题（在 --- 之前）\n第二部分：便签内容（在 --- 之后）\n";
 
-        match self.edit_with_vim(initial_content) {
+        match self.edit_with_vim(template) {
             Ok(Some(edited)) => {
                 // 解析编辑后的内容：第一行是标题，分隔符后是内容
                 let parts: Vec<&str> = edited.splitn(2, "\n---\n").collect();
 
                 if parts.len() == 2 {
                     let title = parts[0].trim().to_string();
-                    let content = parts[1].to_string();
+                    let content = parts[1]
+                        .lines()
+                        .filter(|line| !line.starts_with("---") && !line.starts_with("第") && !line.starts_with("第"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                        .trim()
+                        .to_string();
 
-                    if !title.is_empty() && title != "便签标题" {
+                    if !title.is_empty() && title != "便签标题" && !content.is_empty() {
                         let db = Database::open(&self.db_path)?;
                         let note = Note::new(title, content);
                         let id = db.create_note(&note)?;
                         self.reload_data()?;
                         self.set_status_message(format!("便签 #{} 已创建", id));
-                    } else {
+                    } else if title.is_empty() || title == "便签标题" {
                         self.set_status_message("便签标题不能为空".to_string());
+                    } else {
+                        self.set_status_message("便签内容不能为空".to_string());
                     }
+                } else {
+                    self.set_status_message("便签格式错误：需要包含 --- 分隔符".to_string());
                 }
             }
             Ok(None) => {
@@ -682,21 +703,28 @@ impl App {
         // 禁用原始模式，以便 vim 可以正常工作
         disable_raw_mode()?;
         execute!(io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show)?;
+        io::stdout().flush()?;
 
         // 调用 vim
         let status = Command::new("vim")
             .arg(&temp_file)
             .status()?;
 
+        // 小延迟，确保终端状态恢复
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
         // 重新启用原始模式和替代屏幕
         enable_raw_mode()?;
+
+        let mut stdout = io::stdout();
         execute!(
-            io::stdout(),
+            stdout,
             EnterAlternateScreen,
             crossterm::cursor::Hide,
             crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
             crossterm::cursor::MoveTo(0, 0)
         )?;
+        stdout.flush()?;
 
         // 检查 vim 是否成功编辑
         if !status.success() {
@@ -2028,21 +2056,17 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
 
                 // 任务操作（高频：保留单键）
                 KeyCode::Char('n') | KeyCode::Char('a') | KeyCode::Char('o') | KeyCode::Char('O') => {
-                    // 新建 (vim风格: n/a/o/O都可以) - 也可以用 :new 带参数
+                    // 新建 - 使用 vim 编辑
                     match app.current_tab {
                         0 => {
-                            app.show_dialog = DialogType::CreateTask;
-                            app.input_mode = InputMode::Insert;
-                            app.input_buffer.clear();
-                            app.cursor_position = 0;
+                            if let Err(e) = app.create_task_with_vim() {
+                                app.set_status_message(format!("创建失败: {}", e));
+                            }
                         }
                         1 => {
-                            app.show_dialog = DialogType::CreateNote;
-                            app.input_mode = InputMode::Insert;
-                            app.input_buffer.clear();
-                            app.cursor_position = 0;
-                            app.input_title.clear();
-                            app.input_content.clear();
+                            if let Err(e) = app.create_note_with_vim() {
+                                app.set_status_message(format!("创建失败: {}", e));
+                            }
                         }
                         _ => {}
                     }
