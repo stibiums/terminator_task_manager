@@ -980,21 +980,36 @@ impl App {
         Ok(())
     }
 
-    /// 计算 ViewNote 对话框的最大滚动偏移量
-    pub fn get_view_note_max_scroll(&self) -> usize {
+    /// 计算 ViewNote 对话框的内容行数（包括长行分割）
+    fn calculate_view_note_lines(&self) -> usize {
         if let Some(note) = self.selected_note() {
-            // 计算便签内容的总行数
-            let mut total_lines = note.content.lines().count();
-            total_lines += 10; // 加上其他信息行（标题、分隔线、时间戳、快捷键等）
+            let mut total_lines = 5; // 标题(1) + 空行(1) + 分隔线(1) + 空行(2)
 
-            // 假设对话框窗口高度为 30 行（居中矩形 40% 的高度）
-            let window_height = 30;
+            // 计算内容行数，考虑长行分割（使用字符数而非字节数）
+            for line in note.content.lines() {
+                let char_count = line.chars().count();
+                if char_count > 50 {
+                    // 长行分割：每50个字符一行
+                    total_lines += (char_count + 49) / 50; // 向上取整
+                } else {
+                    total_lines += 1;
+                }
+            }
 
-            // 最大滚动偏移量 = 总行数 - 窗口高度
-            total_lines.saturating_sub(window_height)
+            // 加上尾部信息行（分隔线、时间戳、快捷键等）
+            total_lines += 8; // 分隔线(1) + 空行(1) + 时间戳(1) + 空行(1) + 快捷键说明(2) + 空行(2)
+
+            total_lines
         } else {
             0
         }
+    }
+
+    /// 计算 ViewNote 对话框的最大滚动偏移量
+    pub fn get_view_note_max_scroll(&self) -> usize {
+        let total_lines = self.calculate_view_note_lines();
+        let window_height = 20; // 对话框可显示的行数（留出边框和内边距）
+        total_lines.saturating_sub(window_height)
     }
 
     /// 计算帮助对话框的最大滚动偏移量
@@ -3403,18 +3418,17 @@ fn render_dialog(f: &mut Frame, app: &App) {
                 // 添加便签内容，自动换行处理长行
                 let note_lines: Vec<&str> = note.content.lines().collect();
                 for line in note_lines {
-                    // 对每一行进行处理，如果太长就截断提示
-                    if line.len() > 50 {
+                    // 使用字符计数而非字节计数（正确处理UTF-8中文）
+                    let char_count = line.chars().count();
+                    if char_count > 50 {
                         // 长行分割显示
-                        let mut remaining = line;
-                        while !remaining.is_empty() {
-                            if remaining.len() > 50 {
-                                content.push(Line::from(format!("  {}", &remaining[..50])));
-                                remaining = &remaining[50..];
-                            } else {
-                                content.push(Line::from(format!("  {}", remaining)));
-                                remaining = "";
-                            }
+                        let chars: Vec<char> = line.chars().collect();
+                        let mut char_idx = 0;
+                        while char_idx < chars.len() {
+                            let end_idx = (char_idx + 50).min(chars.len());
+                            let chunk: String = chars[char_idx..end_idx].iter().collect();
+                            content.push(Line::from(format!("  {}", chunk)));
+                            char_idx = end_idx;
                         }
                     } else if line.is_empty() {
                         content.push(Line::from(""));
