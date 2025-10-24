@@ -442,19 +442,19 @@ impl App {
 
     /// 使用 vim 创建新任务
     pub fn create_task_with_vim(&mut self) -> Result<()> {
-        // 提供模板和说明
-        let template = "请输入任务标题（删除这一行及以下的说明）\n\n--- 模板说明 ---\n第一行：任务标题\n保存并退出 vim 来创建任务\n";
+        // 简洁的模板 - 直接为空，用户输入即可
+        let template = "";
         match self.edit_with_vim(template) {
             Ok(Some(content)) => {
-                // 获取第一行作为标题（跳过空行和说明）
+                // 获取第一行非空内容作为标题
                 let title = content
                     .lines()
-                    .find(|line| !line.is_empty() && !line.starts_with("---") && !line.starts_with("第"))
+                    .next()
                     .unwrap_or("")
                     .trim()
                     .to_string();
 
-                if !title.is_empty() && !title.starts_with("请输入") {
+                if !title.is_empty() {
                     let db = Database::open(&self.db_path)?;
                     let task = Task::new(title);
                     let id = db.create_task(&task)?;
@@ -515,8 +515,8 @@ impl App {
 
     /// 使用 vim 创建便签
     pub fn create_note_with_vim(&mut self) -> Result<()> {
-        // 提供模板和说明
-        let template = "便签标题\n---\n请输入便签内容\n\n--- 说明 ---\n第一部分：便签标题（在 --- 之前）\n第二部分：便签内容（在 --- 之后）\n";
+        // 简洁的模板 - 用户只需替换标题和内容
+        let template = "标题\n---\n内容";
 
         match self.edit_with_vim(template) {
             Ok(Some(edited)) => {
@@ -525,24 +525,18 @@ impl App {
 
                 if parts.len() == 2 {
                     let title = parts[0].trim().to_string();
-                    let content = parts[1]
-                        .lines()
-                        .filter(|line| !line.starts_with("---") && !line.starts_with("第") && !line.starts_with("第"))
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                        .trim()
-                        .to_string();
+                    let content = parts[1].trim().to_string();
 
-                    if !title.is_empty() && title != "便签标题" && !content.is_empty() {
+                    if !title.is_empty() && title != "标题" && !content.is_empty() && content != "内容" {
                         let db = Database::open(&self.db_path)?;
                         let note = Note::new(title, content);
                         let id = db.create_note(&note)?;
                         self.reload_data()?;
                         self.set_status_message(format!("便签 #{} 已创建", id));
-                    } else if title.is_empty() || title == "便签标题" {
-                        self.set_status_message("便签标题不能为空".to_string());
+                    } else if title.is_empty() || title == "标题" {
+                        self.set_status_message("请输入便签标题".to_string());
                     } else {
-                        self.set_status_message("便签内容不能为空".to_string());
+                        self.set_status_message("请输入便签内容".to_string());
                     }
                 } else {
                     self.set_status_message("便签格式错误：需要包含 --- 分隔符".to_string());
