@@ -1997,32 +1997,7 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                     app.number_prefix.clear();
                     app.last_key = Some(key);
                 }
-                KeyCode::Left | KeyCode::Char('h') => {
-                    let count = if app.number_prefix.is_empty() {
-                        1
-                    } else {
-                        app.number_prefix.parse::<usize>().unwrap_or(1)
-                    };
-
-                    for _ in 0..count {
-                        app.previous_tab();
-                    }
-                    app.number_prefix.clear();
-                    app.last_key = Some(key);
-                }
-                KeyCode::Right | KeyCode::Char('l') => {
-                    let count = if app.number_prefix.is_empty() {
-                        1
-                    } else {
-                        app.number_prefix.parse::<usize>().unwrap_or(1)
-                    };
-
-                    for _ in 0..count {
-                        app.next_tab();
-                    }
-                    app.number_prefix.clear();
-                    app.last_key = Some(key);
-                }
+                // h/l 快捷键已移除 - 只允许 Tab/123 切换界面
                 KeyCode::Char('g') => {
                     // gg: 双击g跳到顶部
                     if app.last_key == Some(KeyCode::Char('g')) {
