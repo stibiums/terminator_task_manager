@@ -348,6 +348,38 @@ impl App {
         self.note_list_state.select(Some(i));
     }
 
+    /// 在便签网格中向右移动（同一行内）
+    pub fn next_note_same_row(&mut self) {
+        if self.notes.is_empty() {
+            return;
+        }
+        const CARDS_PER_ROW: usize = 3;
+
+        let current = self.note_list_state.selected().unwrap_or(0);
+        let col = current % CARDS_PER_ROW;
+
+        // 如果不在行末，向右移动
+        if col < CARDS_PER_ROW - 1 && current + 1 < self.notes.len() {
+            self.note_list_state.select(Some(current + 1));
+        }
+    }
+
+    /// 在便签网格中向左移动（同一行内）
+    pub fn previous_note_same_row(&mut self) {
+        if self.notes.is_empty() {
+            return;
+        }
+        const CARDS_PER_ROW: usize = 3;
+
+        let current = self.note_list_state.selected().unwrap_or(0);
+        let col = current % CARDS_PER_ROW;
+
+        // 如果不在行首，向左移动
+        if col > 0 {
+            self.note_list_state.select(Some(current - 1));
+        }
+    }
+
     /// vim风格：跳到第一个
     pub fn goto_first_task(&mut self) {
         if !self.tasks.is_empty() {
@@ -1997,7 +2029,22 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                     app.number_prefix.clear();
                     app.last_key = Some(key);
                 }
-                // h/l 快捷键已移除 - 只允许 Tab/123 切换界面
+                // 方向键在 notes 界面支持网格导航
+                KeyCode::Right => {
+                    if app.current_tab == 1 {  // notes 界面
+                        app.next_note_same_row();
+                    }
+                    app.number_prefix.clear();
+                    app.last_key = Some(key);
+                }
+                KeyCode::Left => {
+                    if app.current_tab == 1 {  // notes 界面
+                        app.previous_note_same_row();
+                    }
+                    app.number_prefix.clear();
+                    app.last_key = Some(key);
+                }
+
                 KeyCode::Char('g') => {
                     // gg: 双击g跳到顶部
                     if app.last_key == Some(KeyCode::Char('g')) {
