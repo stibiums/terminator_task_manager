@@ -3524,9 +3524,13 @@ fn render_dialog(f: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .style(Style::default().bg(Color::Black).fg(Color::White));
 
-    let mut paragraph = Paragraph::new(content)
-        .block(block)
-        .wrap(Wrap { trim: true });
+    let mut paragraph = if app.show_dialog == DialogType::ViewNote {
+        // ViewNote: 不使用自动换行（已手动处理），只支持垂直滚动
+        Paragraph::new(content).block(block)
+    } else {
+        // 其他对话框：使用自动换行
+        Paragraph::new(content).block(block).wrap(Wrap { trim: true })
+    };
 
     // 为Help对话框添加滚动支持
     if app.show_dialog == DialogType::Help {
