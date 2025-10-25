@@ -1039,7 +1039,11 @@ impl App {
     /// 计算 ViewNote 对话框的最大滚动偏移量
     pub fn get_view_note_max_scroll(&self) -> usize {
         let total_lines = self.calculate_view_note_lines();
-        let window_height = 20; // 对话框可显示的行数（留出边框和内边距）
+        // 动态计算窗口高度，确保即使在小终端也能滚动
+        // 对话框使用 85% 高度，假设典型终端 25-50 行
+        // 实际可显示行数为：85% * height - 4(边框和边距)
+        // 对于安全起见，使用保守估计 30 行（即使小终端也能显示部分内容）
+        let window_height = 30.min(total_lines.saturating_sub(5)); // 至少显示 5 行内容
         total_lines.saturating_sub(window_height)
     }
 
@@ -2946,7 +2950,13 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
 
 /// 渲染对话框
 fn render_dialog(f: &mut Frame, app: &App) {
-    let area = centered_rect(60, 40, f.area());
+    // 对于 ViewNote，使用更大的高度以容纳长内容
+    let (width_percent, height_percent) = if app.show_dialog == DialogType::ViewNote {
+        (80, 85)  // ViewNote: 更大的尺寸便于阅读长内容
+    } else {
+        (60, 40)  // 其他对话框保持原尺寸
+    };
+    let area = centered_rect(width_percent, height_percent, f.area());
 
     let (title, content) = match app.show_dialog {
         DialogType::CreateTask => {
