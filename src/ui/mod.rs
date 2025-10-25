@@ -2577,7 +2577,7 @@ fn render_notes(f: &mut Frame, app: &mut App, area: Rect) {
 
     // 计算卡片布局：每行3个卡片
     let cards_per_row = 3;
-    let card_height = 8; // 每个卡片的高度
+    let card_height = 6; // 每个卡片的高度（减小以显示更多卡片）
     let num_rows = (app.notes.len() + cards_per_row - 1) / cards_per_row;
 
     // 计算可见区域可以显示多少行
@@ -2644,10 +2644,11 @@ fn render_notes(f: &mut Frame, app: &mut App, area: Rect) {
             let note = &app.notes[note_idx];
             let is_selected = note_idx == selected_idx;
 
-            // 截取内容预览（前3行）
+            // 截取内容预览（前2行）- 更紧凑
             let content_preview: Vec<&str> = note.content
                 .lines()
-                .take(3)
+                .filter(|line| !line.is_empty()) // 过滤空行
+                .take(2)
                 .collect();
 
             let mut lines = vec![];
@@ -2657,11 +2658,12 @@ fn render_notes(f: &mut Frame, app: &mut App, area: Rect) {
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             )));
-            lines.push(Line::from(""));
 
             for line in content_preview {
-                let truncated = if line.len() > 30 {
-                    format!("{}...", &line[0..27])
+                let truncated = if line.chars().count() > 28 {
+                    let chars: Vec<char> = line.chars().collect();
+                    let truncated_str: String = chars[0..27].iter().collect();
+                    format!("{}…", truncated_str)
                 } else {
                     line.to_string()
                 };
