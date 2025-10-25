@@ -1696,15 +1696,13 @@ fn handle_key_event(app: &mut App, key: KeyCode) -> Result<()> {
                     app.view_note_scroll_offset = max_scroll;
                 }
                 KeyCode::Char('e') => {
-                    // 编辑当前便签
-                    if let Some(note) = app.selected_note().cloned() {
-                        app.input_title = note.title;
-                        app.input_content = note.content;
-                        app.note_edit_field = 0;
-                        app.input_mode = InputMode::Normal;
-                        app.show_dialog = DialogType::EditNote;
-                        app.view_note_scroll_offset = 0;
+                    // 编辑当前便签 - 使用 vim
+                    if !app.notes.is_empty() {
+                        if let Err(e) = app.init_edit_note() {
+                            app.set_status_message(format!("编辑失败: {}", e));
+                        }
                     }
+                    app.show_dialog = DialogType::None;
                 }
                 KeyCode::Esc | KeyCode::Char('q') => {
                     app.view_note_scroll_offset = 0;
